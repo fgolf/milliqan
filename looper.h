@@ -10,11 +10,13 @@
 #include <TROOT.h>
 #include <TChain.h>
 #include <TFile.h>
+#include <TString.h>
 
 void InitializeChain(TChain *fChain);
 int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, int nentries, int maxFile, double minTime, double maxTime);
-bool isGoodEvent(int evtCategoryCode, int nHits, bool *HitChan, float *maxSample, TString EventCategory, TString LHCStatus, int RunNum);
+bool isGoodEvent(int nHits, bool *HitChan, float *maxSample, TString EventCategory, TString LHCStatus, int RunNum);
 void NeighborHitMap(bool *NeighborHit, bool HitChan[], int RunNum, TString EventCategory);
+int GetEventCategoryCode(TString EventCategoryName);
 
 // Declaration of leaf types
 Int_t           event;

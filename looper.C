@@ -196,12 +196,7 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
         if (event_trigger_time_tag_b1==event_trigger_time_tag_b0)
             synched = true;
 
-        int evtCategoryCode = 0;
-        if (EventCategory == "All") evtCategoryCode = 0;
-        if (EventCategory == "SPE") evtCategoryCode = 1;
-        if ((EventCategory == "Small") || (EventCategory == "SmallTag")) evtCategoryCode = 2;
-        if ((EventCategory == "Cosmic") || (EventCategory == "CosmicTag")) evtCategoryCode = 3;
-        if ((EventCategory == "Thru") || (EventCategory == "ThruTag")) evtCategoryCode = 4;
+        int evtCategoryCode = GetEventCategoryCode(EventCategory);
 
         // Calculate total area of pulses and save a more convenient maxSample per channel
         float TotalArea[32]; // in nVs
@@ -270,553 +265,551 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
         // Plot of the global total pulse area (across all bars)
         h_TotalGlobalPulseArea->Fill(TotalGlobalArea,1.);
 
-        bool GoodEvent = isGoodEvent(evtCategoryCode, nHits, HitChan, maxSample, EventCategory, LHCStatus, RunNum);
-        if (GoodEvent && evtCategoryCode == 4)
+        bool GoodEvent = isGoodEvent(nHits, HitChan, maxSample, EventCategory, LHCStatus, RunNum);
+        if (not GoodEvent) continue;
+        if (evtCategoryCode == 4)
             std::cout << "Found good event" << std::endl;
-        if (GoodEvent) { // Good event?
+        
+        // loop over channels
+        for (int c=0; c<32; c++) {
+            // Plots of the raw MAX pulse height in each channel
+            h_Max[c]->Fill(maxSample[c],1.);
 
-            // loop over channels
-            for (int c=0; c<32; c++) {
-                // Plots of the raw MAX pulse height in each channel
-                h_Max[c]->Fill(maxSample[c],1.);
+            // Plots of the sideband mean
+            if (c<sideband_mean->size())
+                h_SidebandMean[c]->Fill(sideband_mean->at(c),1.);
+            if (c<sideband_RMS->size())
+                h_SidebandRMS[c]->Fill(sideband_RMS->at(c),1.);
+            
+            // Plots of event time and filenum for channels with hits
+            if (HitChan[c]) {
+                h_FileNum[c]->Fill(1.*filenum,1.);
+                // DO WE NEED THESE SEPARATE FOR EVERY CHANNEL?
+                h_EventTime[c]->Fill(event_time_fromTDC/3600.,1.);
+                h_EventTimeSeconds[c]->Fill(event_time_fromTDC-minTime,1.);
+                if (synched) 
+                    h_EventTimeSynchedSeconds[c]->Fill(event_time_fromTDC-minTime,1.);
+                else
+                    h_EventTimeUnsynchedSeconds[c]->Fill(event_time_fromTDC-minTime,1.);
+            }
+        }
 
-                // Plots of the sideband mean
-                if (c<sideband_mean->size())
-                    h_SidebandMean[c]->Fill(sideband_mean->at(c),1.);
-                if (c<sideband_RMS->size())
-                    h_SidebandRMS[c]->Fill(sideband_RMS->at(c),1.);
-                
-                // Plots of event time and filenum for channels with hits
-                if (HitChan[c]) {
-                    h_FileNum[c]->Fill(1.*filenum,1.);
-                    // DO WE NEED THESE SEPARATE FOR EVERY CHANNEL?
-                    h_EventTime[c]->Fill(event_time_fromTDC/3600.,1.);
-                    h_EventTimeSeconds[c]->Fill(event_time_fromTDC-minTime,1.);
-                    if (synched) 
-                        h_EventTimeSynchedSeconds[c]->Fill(event_time_fromTDC-minTime,1.);
-                    else
-                        h_EventTimeUnsynchedSeconds[c]->Fill(event_time_fromTDC-minTime,1.);
+        // Figure out the event time as the time of the earliest pulse in any channel.
+        float t0 = 9.E9;  
+        for (int i=0; i<int(ptime->size()); i++) // Pulse loop 
+            if (ipulse->at(i) == 0 ) // First pulse in this channel
+                if (ptime->at(i)<t0) t0 = ptime->at(i);
+
+        // Plots of the number of pulses, first pulse time and area in each channel
+        for (int i=0; i<int(ptime->size()); i++) { // Pulse loop 
+            if (ipulse->at(i) == 0 ) { // First pulse in this channel
+                h_FirstTime[int(chan->at(i))]->Fill(float(ptime->at(i)),1.);
+                h_FirstPulseArea[int(chan->at(i))]->Fill(float(area->at(i))/1000.,1.);
+                h_FirstPulseNPE[int(chan->at(i))]->Fill(float(nPE->at(i)),1.);
+                h_FirstPulseHeight[int(chan->at(i))]->Fill(float(height->at(i)),1.);
+                h_FirstDuration[int(chan->at(i))]->Fill(float(duration->at(i)),1.);
+                h_NPulses[int(chan->at(i))]->Fill(float(npulses->at(i)),1.);
+            } // First pulse in this channel
+        } // Pulse loop
+
+        // Plot the pulse time relative to the closest LHC clock edge
+        for (int c=0; c<32; c++) {
+            if (c==15) continue;
+
+            // First find the index of the largest pulse from this channel in the event
+            // DO WE STORE MAX PULSE FOR EACH CHANNEL?
+            int iLargest = -1;
+            for (int i=0; i<int(ptime->size()); i++) 
+                if (int(chan->at(i))==c) {
+                    if (iLargest<0)
+                        iLargest = i;
+                    else if (area->at(i)>area->at(iLargest))
+                        iLargest = i;
                 }
-            }
 
-            // Figure out the event time as the time of the earliest pulse in any channel.
-            float t0 = 9.E9;  
-            for (int i=0; i<int(ptime->size()); i++) // Pulse loop 
-                if (ipulse->at(i) == 0 ) // First pulse in this channel
-                    if (ptime->at(i)<t0) t0 = ptime->at(i);
+            // Now find the nearest LHC clock edge (pulse)
+            // WHAT DOES CALIBRATED MEAN HERE?
+            // IS IT WORTH DOING SOME OF THIS WHEN WE PROCESS THE DATA?
+            if (iLargest>=0 && area->at(iLargest)>AThresholds[c][evtCategoryCode] && 
+                maxSample[c]>VThresholds[c][evtCategoryCode]) { // A pulse found?
+                float dLHCtime = 999.;
+                for (int iL=0; iL<int(ptime->size()); iL++) 
+                    if (int(chan->at(iL)) == 15) { // LHC pulse loop
+                        if (fabs(ptime->at(iLargest)-ptime->at(iL))<fabs(dLHCtime))
+                            dLHCtime = ptime->at(iLargest)-ptime->at(iL);
+                    } // LHC pulse loop
+                h_LHCTime[c]->Fill(dLHCtime);
+                // Repeat using calibrated time
+                dLHCtime = 999.;
+                for (int iL=0; iL<int(ptime->size()); iL++) 
+                    if (int(chan->at(iL)) == 15) { // LHC pulse loop
+                        if (fabs(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iL))<fabs(dLHCtime))
+                            dLHCtime = time_module_calibrated->at(iLargest)-time_module_calibrated->at(iL);
+                    } // LHC pulse loop
+                h_LHCTimeCalib[c]->Fill(dLHCtime);
+            } // A pulse found?
+        }
 
-            // Plots of the number of pulses, first pulse time and area in each channel
-            for (int i=0; i<int(ptime->size()); i++) { // Pulse loop 
-                if (ipulse->at(i) == 0 ) { // First pulse in this channel
-                    h_FirstTime[int(chan->at(i))]->Fill(float(ptime->at(i)),1.);
-                    h_FirstPulseArea[int(chan->at(i))]->Fill(float(area->at(i))/1000.,1.);
-                    h_FirstPulseNPE[int(chan->at(i))]->Fill(float(nPE->at(i)),1.);
-                    h_FirstPulseHeight[int(chan->at(i))]->Fill(float(height->at(i)),1.);
-                    h_FirstDuration[int(chan->at(i))]->Fill(float(duration->at(i)),1.);
-                    h_NPulses[int(chan->at(i))]->Fill(float(npulses->at(i)),1.);
-                } // First pulse in this channel
-            } // Pulse loop
-
-            // Plot the pulse time relative to the closest LHC clock edge
-            for (int c=0; c<32; c++) {
-                if (c==15) continue;
-
-                // First find the index of the largest pulse from this channel in the event
-                // DO WE STORE MAX PULSE FOR EACH CHANNEL?
-                int iLargest = -1;
-                for (int i=0; i<int(ptime->size()); i++) 
-                    if (int(chan->at(i))==c) {
-                        if (iLargest<0)
-                            iLargest = i;
-                        else if (area->at(i)>area->at(iLargest))
-                            iLargest = i;
-                    }
-
-                // Now find the nearest LHC clock edge (pulse)
-                // WHAT DOES CALIBRATED MEAN HERE?
-                // IS IT WORTH DOING SOME OF THIS WHEN WE PROCESS THE DATA?
-                if (iLargest>=0 && area->at(iLargest)>AThresholds[c][evtCategoryCode] && 
-                    maxSample[c]>VThresholds[c][evtCategoryCode]) { // A pulse found?
-                    float dLHCtime = 999.;
-                    for (int iL=0; iL<int(ptime->size()); iL++) 
-                        if (int(chan->at(iL)) == 15) { // LHC pulse loop
-                            if (fabs(ptime->at(iLargest)-ptime->at(iL))<fabs(dLHCtime))
-                                dLHCtime = ptime->at(iLargest)-ptime->at(iL);
-                        } // LHC pulse loop
-                    h_LHCTime[c]->Fill(dLHCtime);
-                    // Repeat using calibrated time
-                    dLHCtime = 999.;
-                    for (int iL=0; iL<int(ptime->size()); iL++) 
-                        if (int(chan->at(iL)) == 15) { // LHC pulse loop
-                            if (fabs(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iL))<fabs(dLHCtime))
-                                dLHCtime = time_module_calibrated->at(iLargest)-time_module_calibrated->at(iL);
-                        } // LHC pulse loop
-                    h_LHCTimeCalib[c]->Fill(dLHCtime);
-                } // A pulse found?
-            }
-
-            // Plot the pulse time relative to the largest pulse in various channels
-            for (int iprobe=0; iprobe<10; iprobe++) { // Loop through 1,7,3,18,20,28,21,0,2,4
-                int prbCH = 1;
-                if (iprobe==0) prbCH=1;
-                if (iprobe==1) prbCH=7;
-                if (iprobe==2) prbCH=3;
-                if (iprobe==3) prbCH=18;
-                if (iprobe==4) prbCH=20;
-                if (iprobe==5) prbCH=28;
-                if (iprobe==6) prbCH=21;
-                if (iprobe==7) prbCH=0;
-                if (iprobe==8) prbCH=2;
-                if (iprobe==9) prbCH=4;
-                // First find the index to the largest pulse in the probe channel
-                int iCH = -1;
-                for (int i=0; i<int(ptime->size()); i++) 
-                    if (int(chan->at(i))==prbCH) {
-                        if (iCH<0 || area->at(i)>area->at(iCH))
-                            iCH = i;
-                    }
-                // Now loop over all channels
-                if (iCH>=0 && area->at(iCH)>AThresholds[prbCH][evtCategoryCode] && 
-                    maxSample[prbCH]>VThresholds[prbCH][evtCategoryCode]) { // Found a pulse in probe channel?
-                    for (int c=0; c<32; c++)
-                        if (c!=15 && c!=prbCH) { // Channel loop
-                            // First find the index to the largest pulse from this channel in the event
-                            int iLargest = -1;
-                            for (int i=0; i<int(ptime->size()); i++) 
-                                if (int(chan->at(i))==c) {
-                                    if (iLargest<0 || area->at(i)>area->at(iLargest))
-                                        iLargest = i;
-                                }
-                            if (iLargest>=0 && area->at(iLargest)>AThresholds[c][evtCategoryCode] && maxSample[c]>VThresholds[c][evtCategoryCode]) {
-                                if (iprobe==0) {
-                                    h_TimeWRTCH1[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
-                                    h_TimeCalibWRTCH1[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
-                                }
-                                if (iprobe==7) {
-                                    h_TimeWRTCH0[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
-                                    h_TimeCalibWRTCH0[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
-                                }
-                                if (iprobe==8) {
-                                    h_TimeWRTCH2[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
-                                    h_TimeCalibWRTCH2[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
-                                }
-                                if (iprobe==9) {
-                                    h_TimeWRTCH4[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
-                                    h_TimeCalibWRTCH4[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
-                                }
-                                if (iprobe==1) {
-                                    h_TimeWRTCH7[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
-                                    h_TimeCalibWRTCH7[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
-                                }
-                                if (iprobe==2) {
-                                    h_TimeWRTCH3[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
-                                    h_TimeCalibWRTCH3[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
-                                }
-                                if (iprobe==3) {
-                                    h_TimeWRTCH18[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
-                                    h_TimeCalibWRTCH18[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
-                                }
-                                if (iprobe==4) {
-                                    h_TimeWRTCH20[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
-                                    h_TimeCalibWRTCH20[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
-                                }
-                                if (iprobe==5) {
-                                    h_TimeWRTCH28[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
-                                    h_TimeCalibWRTCH28[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
-                                }
-                                if (iprobe==6) {
-                                    h_TimeWRTCH21[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
-                                    h_TimeCalibWRTCH21[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
-                                }
+        // Plot the pulse time relative to the largest pulse in various channels
+        for (int iprobe=0; iprobe<10; iprobe++) { // Loop through 1,7,3,18,20,28,21,0,2,4
+            int prbCH = 1;
+            if (iprobe==0) prbCH=1;
+            if (iprobe==1) prbCH=7;
+            if (iprobe==2) prbCH=3;
+            if (iprobe==3) prbCH=18;
+            if (iprobe==4) prbCH=20;
+            if (iprobe==5) prbCH=28;
+            if (iprobe==6) prbCH=21;
+            if (iprobe==7) prbCH=0;
+            if (iprobe==8) prbCH=2;
+            if (iprobe==9) prbCH=4;
+            // First find the index to the largest pulse in the probe channel
+            int iCH = -1;
+            for (int i=0; i<int(ptime->size()); i++) 
+                if (int(chan->at(i))==prbCH) {
+                    if (iCH<0 || area->at(i)>area->at(iCH))
+                        iCH = i;
+                }
+            // Now loop over all channels
+            if (iCH>=0 && area->at(iCH)>AThresholds[prbCH][evtCategoryCode] && 
+                maxSample[prbCH]>VThresholds[prbCH][evtCategoryCode]) { // Found a pulse in probe channel?
+                for (int c=0; c<32; c++)
+                    if (c!=15 && c!=prbCH) { // Channel loop
+                        // First find the index to the largest pulse from this channel in the event
+                        int iLargest = -1;
+                        for (int i=0; i<int(ptime->size()); i++) 
+                            if (int(chan->at(i))==c) {
+                                if (iLargest<0 || area->at(i)>area->at(iLargest))
+                                    iLargest = i;
                             }
-                        } // Channel loop
-                } // Found a pulse in probe channel?
-            } // Loop through 1,7,3,18,20,28,21,0,2,4
+                        if (iLargest>=0 && area->at(iLargest)>AThresholds[c][evtCategoryCode] && maxSample[c]>VThresholds[c][evtCategoryCode]) {
+                            if (iprobe==0) {
+                                h_TimeWRTCH1[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
+                                h_TimeCalibWRTCH1[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
+                            }
+                            if (iprobe==7) {
+                                h_TimeWRTCH0[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
+                                h_TimeCalibWRTCH0[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
+                            }
+                            if (iprobe==8) {
+                                h_TimeWRTCH2[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
+                                h_TimeCalibWRTCH2[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
+                            }
+                            if (iprobe==9) {
+                                h_TimeWRTCH4[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
+                                h_TimeCalibWRTCH4[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
+                            }
+                            if (iprobe==1) {
+                                h_TimeWRTCH7[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
+                                h_TimeCalibWRTCH7[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
+                            }
+                            if (iprobe==2) {
+                                h_TimeWRTCH3[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
+                                h_TimeCalibWRTCH3[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
+                            }
+                            if (iprobe==3) {
+                                h_TimeWRTCH18[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
+                                h_TimeCalibWRTCH18[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
+                            }
+                            if (iprobe==4) {
+                                h_TimeWRTCH20[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
+                                h_TimeCalibWRTCH20[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
+                            }
+                            if (iprobe==5) {
+                                h_TimeWRTCH28[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
+                                h_TimeCalibWRTCH28[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
+                            }
+                            if (iprobe==6) {
+                                h_TimeWRTCH21[c]->Fill(ptime->at(iLargest)-ptime->at(iCH));
+                                h_TimeCalibWRTCH21[c]->Fill(time_module_calibrated->at(iLargest)-time_module_calibrated->at(iCH));
+                            }
+                        }
+                    } // Channel loop
+            } // Found a pulse in probe channel?
+        } // Loop through 1,7,3,18,20,28,21,0,2,4
 
-            // Plots of afterpulses.
-            // Only consider clean after pulses with at least 10 ns between it and the end of the previous pulse. 
-            float firstTime[32]; // Time of first pulse in channel
-            for (int i=0; i<int(ptime->size()); i++)
-                if (ipulse->at(i)==0)
-                    firstTime[int(chan->at(i))] = ptime->at(i);
-            for (int i=0; i<int(ptime->size()); i++) { // Pulse loop 
-                if (ipulse->at(i) != 0 ) { // Not first pulse in this channel?
-                    if (ptime->at(i)>ptime->at(i-1)+duration->at(i-1)+20. &&
-                        duration->at(i)>7.) { // Clean afterpulse
-                        h_AfterPulseArea[int(chan->at(i))]->Fill(float(area->at(i))/1000.,1.);
-                        h_AfterPulseHeight[int(chan->at(i))]->Fill(float(height->at(i)),1.);
-                        h_AfterPulseDuration[int(chan->at(i))]->Fill(float(duration->at(i)),1.);
-                        h_AfterPulseTime[int(chan->at(i))]->Fill(float(ptime->at(i))-firstTime[int(chan->at(i))],1.);
-                    } // Clean afterpulse?
-                } // Not first pulse in this channel?
-            } // Pulse loop
+        // Plots of afterpulses.
+        // Only consider clean after pulses with at least 10 ns between it and the end of the previous pulse. 
+        float firstTime[32]; // Time of first pulse in channel
+        for (int i=0; i<int(ptime->size()); i++)
+            if (ipulse->at(i)==0)
+                firstTime[int(chan->at(i))] = ptime->at(i);
+        for (int i=0; i<int(ptime->size()); i++) { // Pulse loop 
+            if (ipulse->at(i) != 0 ) { // Not first pulse in this channel?
+                if (ptime->at(i)>ptime->at(i-1)+duration->at(i-1)+20. &&
+                    duration->at(i)>7.) { // Clean afterpulse
+                    h_AfterPulseArea[int(chan->at(i))]->Fill(float(area->at(i))/1000.,1.);
+                    h_AfterPulseHeight[int(chan->at(i))]->Fill(float(height->at(i)),1.);
+                    h_AfterPulseDuration[int(chan->at(i))]->Fill(float(duration->at(i)),1.);
+                    h_AfterPulseTime[int(chan->at(i))]->Fill(float(ptime->at(i))-firstTime[int(chan->at(i))],1.);
+                } // Clean afterpulse?
+            } // Not first pulse in this channel?
+        } // Pulse loop
 
-            // Plot charge, height, and duration of tagged channels.
-            // Tagged channels are those with a cosmic partner containing a hit.
+        // Plot charge, height, and duration of tagged channels.
+        // Tagged channels are those with a cosmic partner containing a hit.
 
-            bool NeighborHit[32]; // True for each channel if there is a hit in its neighbor
-            for (int c=0; c<32; c++)
-                NeighborHit[c] = false;
+        bool NeighborHit[32]; // True for each channel if there is a hit in its neighbor
+        for (int c=0; c<32; c++)
+            NeighborHit[c] = false;
 
-            // The channel mapping changed over time, e.g., in TS1
-            NeighborHitMap(NeighborHit,HitChan,RunNum,EventCategory);
+        // The channel mapping changed over time, e.g., in TS1
+        NeighborHitMap(NeighborHit,HitChan,RunNum,EventCategory);
 
-            // Determine which layers and slabs are hit
-            bool layHit[3]; bool slabHit[4]; 
-            layHit[0] = false; layHit[1] = false; layHit[2] = false;
-            slabHit[0] = false; slabHit[1] = false; slabHit[2] = false; slabHit[3] = false; 
-            if (HitChan[18]) slabHit[0] = true;
-            if (HitChan[20]) slabHit[1] = true;
-            if (HitChan[28]) slabHit[2] = true;
-            if (HitChan[21]) slabHit[3] = true;
-            if (HitChan[0] || HitChan[1] || HitChan[24] || HitChan[25] || HitChan[8] || HitChan[9]) layHit[0] = true;
-            if (HitChan[6] || HitChan[7] || HitChan[16] || HitChan[17] || HitChan[12] || HitChan[13]) layHit[1] = true;
-            if (HitChan[2] || HitChan[3] || HitChan[22] || HitChan[23] || HitChan[4] || HitChan[5]) layHit[2] = true;
-            int nSlabHits = 0;
-            for (int i=0; i<4; i++)
-                if (slabHit[i])
-                    nSlabHits++;
-            int nLayHits = 0;
-            for (int i=0; i<3; i++)
-                if (layHit[i])
-                    nLayHits++;
+        // Determine which layers and slabs are hit
+        bool layHit[3]; bool slabHit[4]; 
+        layHit[0] = false; layHit[1] = false; layHit[2] = false;
+        slabHit[0] = false; slabHit[1] = false; slabHit[2] = false; slabHit[3] = false; 
+        if (HitChan[18]) slabHit[0] = true;
+        if (HitChan[20]) slabHit[1] = true;
+        if (HitChan[28]) slabHit[2] = true;
+        if (HitChan[21]) slabHit[3] = true;
+        if (HitChan[0] || HitChan[1] || HitChan[24] || HitChan[25] || HitChan[8] || HitChan[9]) layHit[0] = true;
+        if (HitChan[6] || HitChan[7] || HitChan[16] || HitChan[17] || HitChan[12] || HitChan[13]) layHit[1] = true;
+        if (HitChan[2] || HitChan[3] || HitChan[22] || HitChan[23] || HitChan[4] || HitChan[5]) layHit[2] = true;
+        int nSlabHits = 0;
+        for (int i=0; i<4; i++)
+            if (slabHit[i])
+                nSlabHits++;
+        int nLayHits = 0;
+        for (int i=0; i<3; i++)
+            if (layHit[i])
+                nLayHits++;
 
-            // Plot number of layers hit
-            h_NHitLayers->Fill(1.*nLayHits,1.);
+        // Plot number of layers hit
+        h_NHitLayers->Fill(1.*nLayHits,1.);
 
-            // Dump some crude event displays for cosmics
-            bool showDisplay = true;
-            if (showDisplay && evtCategoryCode==3 && (HitChan[10] || HitChan[11] || HitChan[14])) { // Cosmic step
-                if (nHits>=3) { // At least 3 hits?
-                    cout << "\n";
-                    cout << "Display: file="<<filenum<<" event="<<event<<"\n";
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L2: ";
-                    cout << "     ["<<HitChan[21] <<"]\n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L2: ";
-                    cout << "  --" << HitChan[14]<< HitChan[14]<< HitChan[14]<< HitChan[14]<< HitChan[14]<<"--\n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L2: ";
-                    cout << "  /"<<HitChan[31] << "/" << HitChan[2] <<" "<< HitChan[3] <<"\\"<<HitChan[26]<<"\\ \n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L2: ";
-                    cout << " /"<<HitChan[31] << "/ " << HitChan[22] <<" "<< HitChan[23] <<" \\"<<HitChan[26]<<"\\ \n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L2: ";
-                    cout << "/"<<HitChan[31] << "/  " << HitChan[4] <<" "<< HitChan[5] <<"  \\"<<HitChan[26]<<"\\ \n"; 
-
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L1: ";
-                    cout << "     ["<<HitChan[28] <<"]\n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L1: ";
-                    cout << "  --" << HitChan[11]<< HitChan[11]<< HitChan[11]<< HitChan[11]<< HitChan[11]<<"--\n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L1: ";
-                    cout << "  /"<<HitChan[30] << "/" << HitChan[6] <<" "<< HitChan[7] <<"\\"<<HitChan[19]<<"\\ \n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L1: ";
-                    cout << " /"<<HitChan[30] << "/ " << HitChan[16] <<" "<< HitChan[17] <<" \\"<<HitChan[19]<<"\\ \n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L1: ";
-                    cout << "/"<<HitChan[30] << "/  " << HitChan[12] <<" "<< HitChan[13] <<"  \\"<<HitChan[19]<<"\\ \n"; 
-
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
-                    cout << "     ["<<HitChan[20] <<"]\n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
-                    cout << "  --" << HitChan[10]<< HitChan[10]<< HitChan[10]<< HitChan[10]<< HitChan[10]<<"--\n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
-                    cout << "  /"<<HitChan[27] << "/" << HitChan[0] <<" "<< HitChan[1] <<"\\"<<HitChan[29]<<"\\ \n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
-                    cout << " /"<<HitChan[27] << "/ " << HitChan[24] <<" "<< HitChan[25] <<" \\"<<HitChan[29]<<"\\ \n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
-                    cout << "/"<<HitChan[27] << "/  " << HitChan[8] <<" "<< HitChan[9] <<"  \\"<<HitChan[29]<<"\\ \n"; 
-                    cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
-                    cout << "     ["<<HitChan[18] <<"]\n"; 
-                } // nHits>=4
-            } // Cosmic step
-
-            // Plots of max sample for tagged channels
-            for (int c=0; c<32; c++)
-                if (NeighborHit[c] && maxSample[c]>0.5*VThresholds[c][evtCategoryCode]) h_TaggedMax[c]->Fill(maxSample[c],1.);
-
-            // Now make plots of pulse area, height, and duration for tagged channels.
-            float TotalArea[32];
-            for (int c=0; c<32; c++)
-                TotalArea[c] = 0.; // Sum of area of pulses in the channel
-            for (int i=0; i<int(chan->size()); i++) { // Pulse loop 
-                TotalArea[int(chan->at(i))] += area->at(i)/1000.;
-                if (ipulse->at(i) == 0 ) { // First pulse in this channel
-                    if ((NeighborHit[int(chan->at(i))]) &&
-                        (((area->at(i))/1000.>0.5*AThresholds[chan->at(i)][evtCategoryCode])) &&
-                        (height->at(i)>0.5*VThresholds[chan->at(i)][evtCategoryCode]) &&
-                        (duration->at(i)>DThresholds[chan->at(i)][evtCategoryCode])) { // Tagged by neighbor hit?
-                        h_TaggedPulseArea[int(chan->at(i))]->Fill(float(area->at(i))/1000.,1.);
-                        h_TaggedPulseNPE[int(chan->at(i))]->Fill(float(nPE->at(i)),1.);
-                        h_TaggedPulseHeight[int(chan->at(i))]->Fill(float(height->at(i)),1.);
-                        h_TaggedDuration[int(chan->at(i))]->Fill(float(duration->at(i)),1.);
-                    } // Tagged by neighbor hit?
-                } // First pulse in this channel?
-            } // Pluse loop
-
-            // Histograms of total pulse area for all channels
-            for (int c=0; c<32; c++)
-                if (TotalArea[c]>1.E-5) h_TotalPulseArea[c]->Fill(TotalArea[c],1.);
-
-            // Histograms of total pulse area for channels with a tagging neighbor hit
-            for (int c=0; c<32; c++)
-                if (NeighborHit[c] && TotalArea[c]>0.5*AThresholds[c][evtCategoryCode])
-                    h_TaggedTotalPulseArea[c]->Fill(TotalArea[c],1.);
-
-            // Plot max pulse height for channels when they have hits in the two straight line interlayer partners.
-            // The threshold for the other partners varies with evtCategoryCode as 10mV*evtCategoryCode.
-            // There is no timing cuts on this comparison.
-            // IS THE MAPPING STILL CORRECT?
-            bool partnersHit[32]; // True for each channel if there is a hit in its interlayer partners
-            for (int c=0; c<32; c++)
-                partnersHit[c] = false;
-            float partnerThreshold = 10.*(1+evtCategoryCode); 
-            if (maxSample[6]>partnerThreshold && maxSample[14]>partnerThreshold) partnersHit[0] = true;
-            if (maxSample[7]>partnerThreshold && maxSample[15]>partnerThreshold) partnersHit[1] = true;
-            if (maxSample[12]>partnerThreshold && maxSample[10]>partnerThreshold) partnersHit[2] = true;
-            if (maxSample[13]>partnerThreshold && maxSample[11]>partnerThreshold) partnersHit[3] = true;
-            if (maxSample[8]>partnerThreshold && maxSample[10]>partnerThreshold) partnersHit[4] = true;
-            if (maxSample[9]>partnerThreshold && maxSample[11]>partnerThreshold) partnersHit[5] = true;
-            if (maxSample[0]>partnerThreshold && maxSample[14]>partnerThreshold) partnersHit[6] = true;
-            if (maxSample[1]>partnerThreshold && maxSample[15]>partnerThreshold) partnersHit[7] = true;
-            if (maxSample[4]>partnerThreshold && maxSample[10]>partnerThreshold) partnersHit[8] = true;
-            if (maxSample[5]>partnerThreshold && maxSample[11]>partnerThreshold) partnersHit[9] = true;
-            if (maxSample[2]>partnerThreshold && maxSample[12]>partnerThreshold) partnersHit[10] = true;
-            if (maxSample[3]>partnerThreshold && maxSample[13]>partnerThreshold) partnersHit[11] = true;
-            if (maxSample[4]>partnerThreshold && maxSample[10]>partnerThreshold) partnersHit[12] = true;
-            if (maxSample[3]>partnerThreshold && maxSample[11]>partnerThreshold) partnersHit[13] = true;
-            if (maxSample[0]>partnerThreshold && maxSample[6]>partnerThreshold) partnersHit[14] = true;
-            if (maxSample[1]>partnerThreshold && maxSample[7]>partnerThreshold) partnersHit[15] = true;
-
-            // Plots of max sample for channels with 3-layer partner hits
-            for (int c=0; c<32; c++)
-                if (partnersHit[c] && maxSample[c]>7.) h_TripleLayerMax[c]->Fill(maxSample[c],1.);
-
-            // Plots of coincidence rates with other channels
-            for (int c = 0; c<32; c++)
-                for (int c2 = 0; c2<32; c2++) 
-                    if ( (c2 != c) && HitChan[c] && HitChan[c2] )
-                        h_NPairedHits[c]->Fill(float(c2),1.);
-
-            // Plots of triplet hits
-            //  1 = CH0-6-2
-            //  2 = CH1-7-3
-            //  3 = CH24-16-22
-            //  4 = CH25-17-23
-            //  5 = CH8-12-4
-            //  6 = CH9-13-5
-            //  7 = CH10-30-14
-            //  8 = CH29-19-26
-            //  9 = CH27-11-31
-            // 10 = CH18-20-28
-            // 11 = CH18-21-28
-            if (HitChan[0] && HitChan[6] && HitChan[2]) h_NTripletHits->Fill(1.,1.);
-            if (HitChan[1] && HitChan[7] && HitChan[3]) h_NTripletHits->Fill(2.,1.);
-            if (HitChan[24] && HitChan[16] && HitChan[22]) h_NTripletHits->Fill(3.,1.);
-            if (HitChan[25] && HitChan[17] && HitChan[23]) h_NTripletHits->Fill(4.,1.);
-            if (HitChan[8] && HitChan[12] && HitChan[4]) h_NTripletHits->Fill(5.,1.);
-            if (HitChan[9] && HitChan[13] && HitChan[5]) h_NTripletHits->Fill(6.,1.);
-            if (HitChan[10] && HitChan[30] && HitChan[14]) h_NTripletHits->Fill(7.,1.);
-            if (HitChan[29] && HitChan[19] && HitChan[26]) h_NTripletHits->Fill(8.,1.);
-            if (HitChan[27] && HitChan[11] && HitChan[31]) h_NTripletHits->Fill(9.,1.);
-            if (HitChan[18] && HitChan[20] && HitChan[28]) h_NTripletHits->Fill(10.,1.);
-            if (HitChan[18] && HitChan[21] && HitChan[28]) h_NTripletHits->Fill(11.,1.);
-            // Triplet hits with no other hits present
-            if (nHits == 3) { // 3 hits?
-                if (HitChan[0] && HitChan[6] && HitChan[2]) h_NTripletHits3->Fill(1.,1.);
-                if (HitChan[1] && HitChan[7] && HitChan[3]) h_NTripletHits3->Fill(2.,1.);
-                if (HitChan[24] && HitChan[16] && HitChan[22]) h_NTripletHits3->Fill(3.,1.);
-                if (HitChan[25] && HitChan[17] && HitChan[23]) h_NTripletHits3->Fill(4.,1.);
-                if (HitChan[8] && HitChan[12] && HitChan[4]) h_NTripletHits3->Fill(5.,1.);
-                if (HitChan[9] && HitChan[13] && HitChan[5]) h_NTripletHits3->Fill(6.,1.);
-                if (HitChan[10] && HitChan[30] && HitChan[14]) h_NTripletHits3->Fill(7.,1.);
-                if (HitChan[29] && HitChan[19] && HitChan[26]) h_NTripletHits3->Fill(8.,1.);
-                if (HitChan[27] && HitChan[11] && HitChan[31]) h_NTripletHits3->Fill(9.,1.);
-                if (HitChan[18] && HitChan[20] && HitChan[28]) h_NTripletHits3->Fill(10.,1.);
-                if (HitChan[18] && HitChan[21] && HitChan[28]) h_NTripletHits3->Fill(11.,1.);
-            } // 3 hits?
-            if (nHits == 4) { // 4 hits?
-                if (HitChan[0] && HitChan[6] && HitChan[2]) h_NTripletHits4->Fill(1.,1.);
-                if (HitChan[1] && HitChan[7] && HitChan[3]) h_NTripletHits4->Fill(2.,1.);
-                if (HitChan[24] && HitChan[16] && HitChan[22]) h_NTripletHits4->Fill(3.,1.);
-                if (HitChan[25] && HitChan[17] && HitChan[23]) h_NTripletHits4->Fill(4.,1.);
-                if (HitChan[8] && HitChan[12] && HitChan[4]) h_NTripletHits4->Fill(5.,1.);
-                if (HitChan[9] && HitChan[13] && HitChan[5]) h_NTripletHits4->Fill(6.,1.);
-                if (HitChan[10] && HitChan[30] && HitChan[14]) h_NTripletHits4->Fill(7.,1.);
-                if (HitChan[29] && HitChan[19] && HitChan[26]) h_NTripletHits4->Fill(8.,1.);
-                if (HitChan[27] && HitChan[11] && HitChan[31]) h_NTripletHits4->Fill(9.,1.);
-                if (HitChan[18] && HitChan[20] && HitChan[28]) h_NTripletHits4->Fill(10.,1.);
-                if (HitChan[18] && HitChan[21] && HitChan[28]) h_NTripletHits4->Fill(11.,1.);
-            } // 4 hits?
-
-            // Fill counters of hit pairs within and between layers, which are used to determine rates and validate the trigger.
-            if (HitChan[0]&&HitChan[8]) nCH0CH8++;
-            if (HitChan[1]&&HitChan[9]) nCH1CH9++; 
-            if (HitChan[0]&&HitChan[9]) nCH0CH9++;
-            if (HitChan[1]&&HitChan[8]) nCH1CH8++;
-            if (HitChan[6]&&HitChan[12]) nCH6CH12++; 
-            if (HitChan[7]&&HitChan[13]) nCH7CH13++; 
-            if (HitChan[6]&&HitChan[13]) nCH6CH13++; 
-            if (HitChan[7]&&HitChan[12]) nCH7CH12++;
-            if (HitChan[2]&&HitChan[4]) nCH2CH4++; 
-            if (HitChan[3]&&HitChan[5]) nCH3CH5++; 
-            if (HitChan[2]&&HitChan[5]) nCH2CH5++; 
-            if (HitChan[3]&&HitChan[4]) nCH3CH4++; 
-            if (HitChan[0]&&HitChan[6]) nCH0CH6++;
-            if (HitChan[1]&&HitChan[7]) nCH1CH7++;
-            if (HitChan[0]&&HitChan[7]) nCH0CH7++;
-            if (HitChan[1]&&HitChan[6]) nCH1CH6++;
-            if (HitChan[8]&&HitChan[12]) nCH8CH12++;
-            if (HitChan[9]&&HitChan[13]) nCH9CH13++;
-            if (HitChan[8]&&HitChan[13]) nCH8CH13++;
-            if (HitChan[9]&&HitChan[12]) nCH9CH12++;
-            if (HitChan[0]&&HitChan[12]) nCH0CH12++;
-            if (HitChan[1]&&HitChan[13]) nCH1CH13++;
-            if (HitChan[0]&&HitChan[13]) nCH0CH13++;
-            if (HitChan[1]&&HitChan[12]) nCH1CH12++;
-            if (HitChan[8]&&HitChan[6]) nCH8CH6++;
-            if (HitChan[9]&&HitChan[7]) nCH9CH7++;
-            if (HitChan[8]&&HitChan[7]) nCH8CH7++;
-            if (HitChan[9]&&HitChan[6]) nCH9CH6++;
-            if (HitChan[6]&&HitChan[2]) nCH6CH2++;
-            if (HitChan[7]&&HitChan[3]) nCH7CH3++;
-            if (HitChan[6]&&HitChan[3]) nCH6CH3++;
-            if (HitChan[7]&&HitChan[2]) nCH7CH2++;
-            if (HitChan[12]&&HitChan[4]) nCH12CH4++;
-            if (HitChan[13]&&HitChan[5]) nCH13CH5++;
-            if (HitChan[12]&&HitChan[5]) nCH12CH5++;
-            if (HitChan[13]&&HitChan[4]) nCH13CH4++;
-            if (HitChan[6]&&HitChan[4]) nCH6CH4++;
-            if (HitChan[7]&&HitChan[5]) nCH7CH5++;
-            if (HitChan[6]&&HitChan[5]) nCH6CH5++;
-            if (HitChan[7]&&HitChan[4]) nCH7CH4++;
-            if (HitChan[12]&&HitChan[2]) nCH12CH2++;
-            if (HitChan[13]&&HitChan[3]) nCH13CH3++;
-            if (HitChan[12]&&HitChan[3]) nCH12CH3++;
-            if (HitChan[13]&&HitChan[2]) nCH13CH2++;
-            if (HitChan[0]&&HitChan[8]&&HitChan[10]) nCH0CH8CH10++; // 3 hits per layer
-            if (HitChan[1]&&HitChan[9]&&HitChan[10]) nCH1CH9CH10++;
-            if (HitChan[0]&&HitChan[9]&&HitChan[10]) nCH0CH9CH10++;
-            if (HitChan[1]&&HitChan[8]&&HitChan[10]) nCH1CH8CH10++;
-            if (HitChan[6]&&HitChan[12]&&HitChan[30]) nCH6CH12CH30++;
-            if (HitChan[7]&&HitChan[13]&&HitChan[30]) nCH7CH13CH30++;
-            if (HitChan[2]&&HitChan[4]&&HitChan[14]) nCH2CH4CH14++;
-            if (HitChan[3]&&HitChan[5]&&HitChan[14]) nCH3CH5CH14++;
-            if (HitChan[2]&&HitChan[5]&&HitChan[14]) nCH2CH5CH14++;
-            if (HitChan[3]&&HitChan[4]&&HitChan[14]) nCH3CH4CH14++;
-            if (HitChan[0]&&HitChan[6]&&HitChan[2]) nCH0CH6CH2++; // Hits across 3 layers
-            if (HitChan[1]&&HitChan[7]&&HitChan[3]) nCH1CH7CH3++;
-            if (HitChan[0]&&HitChan[6]&&HitChan[3]) nCH0CH6CH3++;
-            if (HitChan[1]&&HitChan[7]&&HitChan[2]) nCH1CH7CH2++;
-            if (HitChan[0]&&HitChan[7]&&HitChan[2]) nCH0CH7CH2++;
-            if (HitChan[1]&&HitChan[6]&&HitChan[3]) nCH1CH6CH3++;
-            if (HitChan[8]&&HitChan[12]&&HitChan[4]) nCH8CH12CH4++;
-            if (HitChan[9]&&HitChan[13]&&HitChan[5]) nCH9CH13CH5++;
-            if (HitChan[8]&&HitChan[12]&&HitChan[5]) nCH8CH12CH5++;
-            if (HitChan[9]&&HitChan[13]&&HitChan[4]) nCH9CH13CH4++;
-            if (HitChan[8]&&HitChan[13]&&HitChan[4]) nCH8CH13CH4++;
-            if (HitChan[9]&&HitChan[12]&&HitChan[5]) nCH9CH12CH5++;
-            if (HitChan[0]&&HitChan[6]&&HitChan[4]) nCH0CH6CH4++;
-            if (HitChan[0]&&HitChan[6]&&HitChan[5]) nCH0CH6CH5++;
-            if (HitChan[1]&&HitChan[7]&&HitChan[5]) nCH1CH7CH5++;
-            if (HitChan[1]&&HitChan[7]&&HitChan[4]) nCH1CH7CH4++;
-            if (HitChan[11]&&HitChan[8]) nCH11CH8++; // Two hits in digitizer 1...
-            if (HitChan[11]&&HitChan[9]) nCH11CH9++; 
-            if (HitChan[13]&&HitChan[8]) nCH13CH8++; 
-            if (HitChan[13]&&HitChan[9]) nCH13CH9++;
-            if (HitChan[16]&&HitChan[30]) nCH16CH30++;
-            if (HitChan[17]&&HitChan[30]) nCH17CH30++;
-            if (HitChan[16]&&HitChan[19]) nCH16CH19++;
-            if (HitChan[17]&&HitChan[19]) nCH17CH19++;
-            if (HitChan[22]&&HitChan[15]) nCH22CH15++;
-            if (HitChan[23]&&HitChan[15]) nCH23CH15++;
-            if (HitChan[22]&&HitChan[10]) nCH22CH10++;
-            if (HitChan[23]&&HitChan[10]) nCH23CH10++;
-            if (HitChan[27]&&HitChan[24]&&HitChan[29]) nCH27CH24CH29++; // Three hits within a layer
-            if (HitChan[27]&&HitChan[25]&&HitChan[29]) nCH27CH25CH29++;
-            if (HitChan[30]&&HitChan[16]&&HitChan[19]) nCH30CH16CH19++;
-            if (HitChan[30]&&HitChan[17]&&HitChan[19]) nCH30CH17CH19++;
-            if (HitChan[31]&&HitChan[22]&&HitChan[26]) nCH31CH22CH26++;
-            if (HitChan[31]&&HitChan[23]&&HitChan[26]) nCH31CH23CH26++;
-            if (HitChan[24]&&HitChan[16]&&HitChan[22]) nCH24CH16CH22++; // Hits across 3 layers
-            if (HitChan[24]&&HitChan[16]&&HitChan[23]) nCH24CH16CH23++;
-            if (HitChan[24]&&HitChan[17]&&HitChan[23]) nCH24CH17CH23++;
-            if (HitChan[24]&&HitChan[17]&&HitChan[22]) nCH24CH17CH22++;
-            if (HitChan[25]&&HitChan[17]&&HitChan[23]) nCH25CH17CH23++;
-            if (HitChan[25]&&HitChan[16]&&HitChan[23]) nCH25CH16CH23++;
-            if (HitChan[25]&&HitChan[16]&&HitChan[22]) nCH25CH16CH22++;
-            if (HitChan[18]&&HitChan[20]) nCH18CH20++; // Two hits between slabs
-            if (HitChan[20]&&HitChan[28]) nCH20CH28++;
-            if (HitChan[28]&&HitChan[21]) nCH28CH21++;
-            if (HitChan[18]&&HitChan[28]) nCH18CH28++;
-            if (HitChan[20]&&HitChan[21]) nCH20CH21++;
-            if (HitChan[18]&&HitChan[21]) nCH18CH21++;
-            if (HitChan[18]&&HitChan[20]&&HitChan[28]) nCH18CH20CH28++; // Hits across slab layers
-            if (HitChan[20]&&HitChan[28]&&HitChan[21]) nCH20CH28CH21++;
-            if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]) nCH18CH20CH28CH21++; 
-            if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
-                HitChan[0]&&HitChan[6]&&HitChan[2]) nCH18CH20CH28CH21CH0CH6CH2++; 
-            if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
-                HitChan[1]&&HitChan[7]&&HitChan[3]) nCH18CH20CH28CH21CH1CH7CH3++; 
-            if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
-                HitChan[24]&&HitChan[16]&&HitChan[22]) nCH18CH20CH28CH21CH24CH16CH22++; 
-            if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
-                HitChan[25]&&HitChan[17]&&HitChan[23]) nCH18CH20CH28CH21CH25CH17CH23++; 
-            if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
-                HitChan[12]&&HitChan[4]) nCH18CH20CH28CH21CH12CH4++; 
-            if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
-                HitChan[9]&&HitChan[13]&&HitChan[5]) nCH18CH20CH28CH21CH9CH13CH5++; 
-            if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
-                (HitChan[0]||HitChan[1]||HitChan[24]||HitChan[25]||HitChan[8]||HitChan[9])&&
-                (HitChan[6]||HitChan[7]||HitChan[16]||HitChan[17]||HitChan[12]||HitChan[13])&&
-                (HitChan[2]||HitChan[3]||HitChan[22]||HitChan[23]||HitChan[4]||HitChan[5]) ) {
-                nAllSlabsAllLayers++;
-                if (evtCategoryCode==4) 
-                    cout << "AllSlabsAllLayers event: makeDisplays.py "<<RunNum<<" 1 -s "<<'"'<<"file=="<<filenum<<"&&event=="<<event<<'"'<<" -r 0 640 --noBounds --tag AllSlabsAllLayers\n";
-            }
-            if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
-                (HitChan[0]||HitChan[1]||HitChan[24]||HitChan[25]||HitChan[8]||HitChan[9]||
-                 HitChan[6]||HitChan[7]||HitChan[16]||HitChan[17]||HitChan[12]||HitChan[13]||
-                 HitChan[2]||HitChan[3]||HitChan[22]||HitChan[23]||HitChan[4]||HitChan[5]) )
-                nAllSlabsAnyLayer++;
-            if ((HitChan[18]||HitChan[20]||HitChan[28]||HitChan[21])&&
-                (HitChan[0]||HitChan[1]||HitChan[24]||HitChan[25]||HitChan[8]||HitChan[9])&&
-                (HitChan[6]||HitChan[7]||HitChan[16]||HitChan[17]||HitChan[12]||HitChan[13])&&
-                (HitChan[2]||HitChan[3]||HitChan[22]||HitChan[23]||HitChan[4]||HitChan[5]) )
-                nAllLayersAnySlab++;
- 
-            // Dump an ANT for mergine with the hodoscope data
-            if (evtCategoryCode==0 && RangeCode == "A") { // TS1 ANT
-                cout <<setprecision(4);
-                cout << "\nTS1:";
-                cout << run<<" "; // 1
-                cout << filenum<<" "; // 2
-                cout << event<<" "; // 3
-                cout << ia<<" "; // 4
-                cout <<beam<<" "; // 5
-                cout << long(1000*(event_time_fromTDC))<<" "; // 6; Event time in milliseconds
-                cout << timeBetweenEvents<<" "; // 7; Time between events in microseconds
-                cout << event_trigger_time_tag_b0 << " "; // 8; Time for digitizer 0
-                cout << event_trigger_time_tag_b1 << " "; // 9; Time for digitizer 1
-                cout << event_trigger_time_tag_b0-prev_event_trigger_time_tag_b0 << " "; // 10; Time between events for dig0
-                cout << event_trigger_time_tag_b1-prev_event_trigger_time_tag_b1 << " "; // 11; Time between events for dig0
-                prev_event_trigger_time_tag_b0 = event_trigger_time_tag_b0;
-                prev_event_trigger_time_tag_b1 = event_trigger_time_tag_b1;
-                cout << event_trigger_time_tag_b1-event_trigger_time_tag_b0<<" "; // 12; TTT mismatch between boards
-
-                cout << groupTDC_b0->at(0) << " "; // 13; gTDC for digitizer 0
-                cout << groupTDC_b1->at(0) << " "; // 14; gTDC for digitizer 1
-                cout << groupTDC_b0->at(0)-prev_gTDC_b0 << " "; // 15; gTDC diff from prev event for dig 0
-                cout << groupTDC_b1->at(0)-prev_gTDC_b1 << " "; // 16; gTDC diff from prev event for dig 0
-                prev_gTDC_b0 = groupTDC_b0->at(0);
-                prev_gTDC_b1 = groupTDC_b1->at(0);
-                cout << groupTDC_b1->at(0)-groupTDC_b0->at(0) << " "; // 17; gTDC mismatch between boards
-
-                for (int c=0; c<32; c++) {
-                    cout << " "<<maxSample[c];
-                    cout << " "<<TotalArea[c];
-                }
+        // Dump some crude event displays for cosmics
+        bool showDisplay = true;
+        if (showDisplay && evtCategoryCode==3 && (HitChan[10] || HitChan[11] || HitChan[14])) { // Cosmic step
+            if (nHits>=3) { // At least 3 hits?
                 cout << "\n";
-            } // TS1 ANT
+                cout << "Display: file="<<filenum<<" event="<<event<<"\n";
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L2: ";
+                cout << "     ["<<HitChan[21] <<"]\n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L2: ";
+                cout << "  --" << HitChan[14]<< HitChan[14]<< HitChan[14]<< HitChan[14]<< HitChan[14]<<"--\n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L2: ";
+                cout << "  /"<<HitChan[31] << "/" << HitChan[2] <<" "<< HitChan[3] <<"\\"<<HitChan[26]<<"\\ \n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L2: ";
+                cout << " /"<<HitChan[31] << "/ " << HitChan[22] <<" "<< HitChan[23] <<" \\"<<HitChan[26]<<"\\ \n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L2: ";
+                cout << "/"<<HitChan[31] << "/  " << HitChan[4] <<" "<< HitChan[5] <<"  \\"<<HitChan[26]<<"\\ \n"; 
 
-        } // Good event?
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L1: ";
+                cout << "     ["<<HitChan[28] <<"]\n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L1: ";
+                cout << "  --" << HitChan[11]<< HitChan[11]<< HitChan[11]<< HitChan[11]<< HitChan[11]<<"--\n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L1: ";
+                cout << "  /"<<HitChan[30] << "/" << HitChan[6] <<" "<< HitChan[7] <<"\\"<<HitChan[19]<<"\\ \n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L1: ";
+                cout << " /"<<HitChan[30] << "/ " << HitChan[16] <<" "<< HitChan[17] <<" \\"<<HitChan[19]<<"\\ \n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L1: ";
+                cout << "/"<<HitChan[30] << "/  " << HitChan[12] <<" "<< HitChan[13] <<"  \\"<<HitChan[19]<<"\\ \n"; 
 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
+                cout << "     ["<<HitChan[20] <<"]\n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
+                cout << "  --" << HitChan[10]<< HitChan[10]<< HitChan[10]<< HitChan[10]<< HitChan[10]<<"--\n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
+                cout << "  /"<<HitChan[27] << "/" << HitChan[0] <<" "<< HitChan[1] <<"\\"<<HitChan[29]<<"\\ \n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
+                cout << " /"<<HitChan[27] << "/ " << HitChan[24] <<" "<< HitChan[25] <<" \\"<<HitChan[29]<<"\\ \n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
+                cout << "/"<<HitChan[27] << "/  " << HitChan[8] <<" "<< HitChan[9] <<"  \\"<<HitChan[29]<<"\\ \n"; 
+                cout << "Display: nS="<<nSlabHits<<" nL="<<nLayHits<<" "<<layHit[0]<<layHit[1]<<layHit[2]<<" "<<filenum<<" "<<event<<" L0: ";
+                cout << "     ["<<HitChan[18] <<"]\n"; 
+            } // nHits>=4
+        } // Cosmic step
+
+        // Plots of max sample for tagged channels
+        for (int c=0; c<32; c++)
+            if (NeighborHit[c] && maxSample[c]>0.5*VThresholds[c][evtCategoryCode]) h_TaggedMax[c]->Fill(maxSample[c],1.);
+
+        // Now make plots of pulse area, height, and duration for tagged channels.
+        float TotalPulseArea[32];
+        for (int c=0; c<32; c++)
+            TotalPulseArea[c] = 0.; // Sum of area of pulses in the channel
+        for (int i=0; i<int(chan->size()); i++) { // Pulse loop 
+            TotalPulseArea[int(chan->at(i))] += area->at(i)/1000.;
+            if (ipulse->at(i) == 0 ) { // First pulse in this channel
+                if ((NeighborHit[int(chan->at(i))]) &&
+                    (((area->at(i))/1000.>0.5*AThresholds[chan->at(i)][evtCategoryCode])) &&
+                    (height->at(i)>0.5*VThresholds[chan->at(i)][evtCategoryCode]) &&
+                    (duration->at(i)>DThresholds[chan->at(i)][evtCategoryCode])) { // Tagged by neighbor hit?
+                    h_TaggedPulseArea[int(chan->at(i))]->Fill(float(area->at(i))/1000.,1.);
+                    h_TaggedPulseNPE[int(chan->at(i))]->Fill(float(nPE->at(i)),1.);
+                    h_TaggedPulseHeight[int(chan->at(i))]->Fill(float(height->at(i)),1.);
+                    h_TaggedDuration[int(chan->at(i))]->Fill(float(duration->at(i)),1.);
+                } // Tagged by neighbor hit?
+            } // First pulse in this channel?
+        } // Pluse loop
+
+        // Histograms of total pulse area for all channels
+        for (int c=0; c<32; c++)
+            if (TotalPulseArea[c]>1.E-5) h_TotalPulseArea[c]->Fill(TotalArea[c],1.);
+
+        // Histograms of total pulse area for channels with a tagging neighbor hit
+        for (int c=0; c<32; c++)
+            if (NeighborHit[c] && TotalPulseArea[c]>0.5*AThresholds[c][evtCategoryCode])
+                h_TaggedTotalPulseArea[c]->Fill(TotalPulseArea[c],1.);
+
+        // Plot max pulse height for channels when they have hits in the two straight line interlayer partners.
+        // The threshold for the other partners varies with evtCategoryCode as 10mV*evtCategoryCode.
+        // There is no timing cuts on this comparison.
+        // IS THE MAPPING STILL CORRECT?
+/*
+        bool partnersHit[32]; // True for each channel if there is a hit in its interlayer partners
+        for (int c=0; c<32; c++)
+            partnersHit[c] = false;
+        float partnerThreshold = 10.*(1+evtCategoryCode); 
+        if (maxSample[6]>partnerThreshold && maxSample[14]>partnerThreshold) partnersHit[0] = true;
+        if (maxSample[7]>partnerThreshold && maxSample[15]>partnerThreshold) partnersHit[1] = true;
+        if (maxSample[12]>partnerThreshold && maxSample[10]>partnerThreshold) partnersHit[2] = true;
+        if (maxSample[13]>partnerThreshold && maxSample[11]>partnerThreshold) partnersHit[3] = true;
+        if (maxSample[8]>partnerThreshold && maxSample[10]>partnerThreshold) partnersHit[4] = true;
+        if (maxSample[9]>partnerThreshold && maxSample[11]>partnerThreshold) partnersHit[5] = true;
+        if (maxSample[0]>partnerThreshold && maxSample[14]>partnerThreshold) partnersHit[6] = true;
+        if (maxSample[1]>partnerThreshold && maxSample[15]>partnerThreshold) partnersHit[7] = true;
+        if (maxSample[4]>partnerThreshold && maxSample[10]>partnerThreshold) partnersHit[8] = true;
+        if (maxSample[5]>partnerThreshold && maxSample[11]>partnerThreshold) partnersHit[9] = true;
+        if (maxSample[2]>partnerThreshold && maxSample[12]>partnerThreshold) partnersHit[10] = true;
+        if (maxSample[3]>partnerThreshold && maxSample[13]>partnerThreshold) partnersHit[11] = true;
+        if (maxSample[4]>partnerThreshold && maxSample[10]>partnerThreshold) partnersHit[12] = true;
+        if (maxSample[3]>partnerThreshold && maxSample[11]>partnerThreshold) partnersHit[13] = true;
+        if (maxSample[0]>partnerThreshold && maxSample[6]>partnerThreshold) partnersHit[14] = true;
+        if (maxSample[1]>partnerThreshold && maxSample[7]>partnerThreshold) partnersHit[15] = true;
+*/
+        // Plots of max sample for channels with 3-layer partner hits
+        for (int c=0; c<32; c++)
+            if (partnersHit[c] && maxSample[c]>7.) h_TripleLayerMax[c]->Fill(maxSample[c],1.);
+
+        // Plots of coincidence rates with other channels
+        for (int c = 0; c<32; c++)
+            for (int c2 = 0; c2<32; c2++) 
+                if ( (c2 != c) && HitChan[c] && HitChan[c2] )
+                    h_NPairedHits[c]->Fill(float(c2),1.);
+
+        // Plots of triplet hits
+        //  1 = CH0-6-2
+        //  2 = CH1-7-3
+        //  3 = CH24-16-22
+        //  4 = CH25-17-23
+        //  5 = CH8-12-4
+        //  6 = CH9-13-5
+        //  7 = CH10-30-14
+        //  8 = CH29-19-26
+        //  9 = CH27-11-31
+        // 10 = CH18-20-28
+        // 11 = CH18-21-28
+        if (HitChan[0] && HitChan[6] && HitChan[2]) h_NTripletHits->Fill(1.,1.);
+        if (HitChan[1] && HitChan[7] && HitChan[3]) h_NTripletHits->Fill(2.,1.);
+        if (HitChan[24] && HitChan[16] && HitChan[22]) h_NTripletHits->Fill(3.,1.);
+        if (HitChan[25] && HitChan[17] && HitChan[23]) h_NTripletHits->Fill(4.,1.);
+        if (HitChan[8] && HitChan[12] && HitChan[4]) h_NTripletHits->Fill(5.,1.);
+        if (HitChan[9] && HitChan[13] && HitChan[5]) h_NTripletHits->Fill(6.,1.);
+        if (HitChan[10] && HitChan[30] && HitChan[14]) h_NTripletHits->Fill(7.,1.);
+        if (HitChan[29] && HitChan[19] && HitChan[26]) h_NTripletHits->Fill(8.,1.);
+        if (HitChan[27] && HitChan[11] && HitChan[31]) h_NTripletHits->Fill(9.,1.);
+        if (HitChan[18] && HitChan[20] && HitChan[28]) h_NTripletHits->Fill(10.,1.);
+        if (HitChan[18] && HitChan[21] && HitChan[28]) h_NTripletHits->Fill(11.,1.);
+        // Triplet hits with no other hits present
+        if (nHits == 3) { // 3 hits?
+            if (HitChan[0] && HitChan[6] && HitChan[2]) h_NTripletHits3->Fill(1.,1.);
+            if (HitChan[1] && HitChan[7] && HitChan[3]) h_NTripletHits3->Fill(2.,1.);
+            if (HitChan[24] && HitChan[16] && HitChan[22]) h_NTripletHits3->Fill(3.,1.);
+            if (HitChan[25] && HitChan[17] && HitChan[23]) h_NTripletHits3->Fill(4.,1.);
+            if (HitChan[8] && HitChan[12] && HitChan[4]) h_NTripletHits3->Fill(5.,1.);
+            if (HitChan[9] && HitChan[13] && HitChan[5]) h_NTripletHits3->Fill(6.,1.);
+            if (HitChan[10] && HitChan[30] && HitChan[14]) h_NTripletHits3->Fill(7.,1.);
+            if (HitChan[29] && HitChan[19] && HitChan[26]) h_NTripletHits3->Fill(8.,1.);
+            if (HitChan[27] && HitChan[11] && HitChan[31]) h_NTripletHits3->Fill(9.,1.);
+            if (HitChan[18] && HitChan[20] && HitChan[28]) h_NTripletHits3->Fill(10.,1.);
+            if (HitChan[18] && HitChan[21] && HitChan[28]) h_NTripletHits3->Fill(11.,1.);
+        } // 3 hits?
+        if (nHits == 4) { // 4 hits?
+            if (HitChan[0] && HitChan[6] && HitChan[2]) h_NTripletHits4->Fill(1.,1.);
+            if (HitChan[1] && HitChan[7] && HitChan[3]) h_NTripletHits4->Fill(2.,1.);
+            if (HitChan[24] && HitChan[16] && HitChan[22]) h_NTripletHits4->Fill(3.,1.);
+            if (HitChan[25] && HitChan[17] && HitChan[23]) h_NTripletHits4->Fill(4.,1.);
+            if (HitChan[8] && HitChan[12] && HitChan[4]) h_NTripletHits4->Fill(5.,1.);
+            if (HitChan[9] && HitChan[13] && HitChan[5]) h_NTripletHits4->Fill(6.,1.);
+            if (HitChan[10] && HitChan[30] && HitChan[14]) h_NTripletHits4->Fill(7.,1.);
+            if (HitChan[29] && HitChan[19] && HitChan[26]) h_NTripletHits4->Fill(8.,1.);
+            if (HitChan[27] && HitChan[11] && HitChan[31]) h_NTripletHits4->Fill(9.,1.);
+            if (HitChan[18] && HitChan[20] && HitChan[28]) h_NTripletHits4->Fill(10.,1.);
+            if (HitChan[18] && HitChan[21] && HitChan[28]) h_NTripletHits4->Fill(11.,1.);
+        } // 4 hits?
+
+        // Fill counters of hit pairs within and between layers, which are used to determine rates and validate the trigger.
+        if (HitChan[0]&&HitChan[8]) nCH0CH8++;
+        if (HitChan[1]&&HitChan[9]) nCH1CH9++; 
+        if (HitChan[0]&&HitChan[9]) nCH0CH9++;
+        if (HitChan[1]&&HitChan[8]) nCH1CH8++;
+        if (HitChan[6]&&HitChan[12]) nCH6CH12++; 
+        if (HitChan[7]&&HitChan[13]) nCH7CH13++; 
+        if (HitChan[6]&&HitChan[13]) nCH6CH13++; 
+        if (HitChan[7]&&HitChan[12]) nCH7CH12++;
+        if (HitChan[2]&&HitChan[4]) nCH2CH4++; 
+        if (HitChan[3]&&HitChan[5]) nCH3CH5++; 
+        if (HitChan[2]&&HitChan[5]) nCH2CH5++; 
+        if (HitChan[3]&&HitChan[4]) nCH3CH4++; 
+        if (HitChan[0]&&HitChan[6]) nCH0CH6++;
+        if (HitChan[1]&&HitChan[7]) nCH1CH7++;
+        if (HitChan[0]&&HitChan[7]) nCH0CH7++;
+        if (HitChan[1]&&HitChan[6]) nCH1CH6++;
+        if (HitChan[8]&&HitChan[12]) nCH8CH12++;
+        if (HitChan[9]&&HitChan[13]) nCH9CH13++;
+        if (HitChan[8]&&HitChan[13]) nCH8CH13++;
+        if (HitChan[9]&&HitChan[12]) nCH9CH12++;
+        if (HitChan[0]&&HitChan[12]) nCH0CH12++;
+        if (HitChan[1]&&HitChan[13]) nCH1CH13++;
+        if (HitChan[0]&&HitChan[13]) nCH0CH13++;
+        if (HitChan[1]&&HitChan[12]) nCH1CH12++;
+        if (HitChan[8]&&HitChan[6]) nCH8CH6++;
+        if (HitChan[9]&&HitChan[7]) nCH9CH7++;
+        if (HitChan[8]&&HitChan[7]) nCH8CH7++;
+        if (HitChan[9]&&HitChan[6]) nCH9CH6++;
+        if (HitChan[6]&&HitChan[2]) nCH6CH2++;
+        if (HitChan[7]&&HitChan[3]) nCH7CH3++;
+        if (HitChan[6]&&HitChan[3]) nCH6CH3++;
+        if (HitChan[7]&&HitChan[2]) nCH7CH2++;
+        if (HitChan[12]&&HitChan[4]) nCH12CH4++;
+        if (HitChan[13]&&HitChan[5]) nCH13CH5++;
+        if (HitChan[12]&&HitChan[5]) nCH12CH5++;
+        if (HitChan[13]&&HitChan[4]) nCH13CH4++;
+        if (HitChan[6]&&HitChan[4]) nCH6CH4++;
+        if (HitChan[7]&&HitChan[5]) nCH7CH5++;
+        if (HitChan[6]&&HitChan[5]) nCH6CH5++;
+        if (HitChan[7]&&HitChan[4]) nCH7CH4++;
+        if (HitChan[12]&&HitChan[2]) nCH12CH2++;
+        if (HitChan[13]&&HitChan[3]) nCH13CH3++;
+        if (HitChan[12]&&HitChan[3]) nCH12CH3++;
+        if (HitChan[13]&&HitChan[2]) nCH13CH2++;
+        if (HitChan[0]&&HitChan[8]&&HitChan[10]) nCH0CH8CH10++; // 3 hits per layer
+        if (HitChan[1]&&HitChan[9]&&HitChan[10]) nCH1CH9CH10++;
+        if (HitChan[0]&&HitChan[9]&&HitChan[10]) nCH0CH9CH10++;
+        if (HitChan[1]&&HitChan[8]&&HitChan[10]) nCH1CH8CH10++;
+        if (HitChan[6]&&HitChan[12]&&HitChan[30]) nCH6CH12CH30++;
+        if (HitChan[7]&&HitChan[13]&&HitChan[30]) nCH7CH13CH30++;
+        if (HitChan[2]&&HitChan[4]&&HitChan[14]) nCH2CH4CH14++;
+        if (HitChan[3]&&HitChan[5]&&HitChan[14]) nCH3CH5CH14++;
+        if (HitChan[2]&&HitChan[5]&&HitChan[14]) nCH2CH5CH14++;
+        if (HitChan[3]&&HitChan[4]&&HitChan[14]) nCH3CH4CH14++;
+        if (HitChan[0]&&HitChan[6]&&HitChan[2]) nCH0CH6CH2++; // Hits across 3 layers
+        if (HitChan[1]&&HitChan[7]&&HitChan[3]) nCH1CH7CH3++;
+        if (HitChan[0]&&HitChan[6]&&HitChan[3]) nCH0CH6CH3++;
+        if (HitChan[1]&&HitChan[7]&&HitChan[2]) nCH1CH7CH2++;
+        if (HitChan[0]&&HitChan[7]&&HitChan[2]) nCH0CH7CH2++;
+        if (HitChan[1]&&HitChan[6]&&HitChan[3]) nCH1CH6CH3++;
+        if (HitChan[8]&&HitChan[12]&&HitChan[4]) nCH8CH12CH4++;
+        if (HitChan[9]&&HitChan[13]&&HitChan[5]) nCH9CH13CH5++;
+        if (HitChan[8]&&HitChan[12]&&HitChan[5]) nCH8CH12CH5++;
+        if (HitChan[9]&&HitChan[13]&&HitChan[4]) nCH9CH13CH4++;
+        if (HitChan[8]&&HitChan[13]&&HitChan[4]) nCH8CH13CH4++;
+        if (HitChan[9]&&HitChan[12]&&HitChan[5]) nCH9CH12CH5++;
+        if (HitChan[0]&&HitChan[6]&&HitChan[4]) nCH0CH6CH4++;
+        if (HitChan[0]&&HitChan[6]&&HitChan[5]) nCH0CH6CH5++;
+        if (HitChan[1]&&HitChan[7]&&HitChan[5]) nCH1CH7CH5++;
+        if (HitChan[1]&&HitChan[7]&&HitChan[4]) nCH1CH7CH4++;
+        if (HitChan[11]&&HitChan[8]) nCH11CH8++; // Two hits in digitizer 1...
+        if (HitChan[11]&&HitChan[9]) nCH11CH9++; 
+        if (HitChan[13]&&HitChan[8]) nCH13CH8++; 
+        if (HitChan[13]&&HitChan[9]) nCH13CH9++;
+        if (HitChan[16]&&HitChan[30]) nCH16CH30++;
+        if (HitChan[17]&&HitChan[30]) nCH17CH30++;
+        if (HitChan[16]&&HitChan[19]) nCH16CH19++;
+        if (HitChan[17]&&HitChan[19]) nCH17CH19++;
+        if (HitChan[22]&&HitChan[15]) nCH22CH15++;
+        if (HitChan[23]&&HitChan[15]) nCH23CH15++;
+        if (HitChan[22]&&HitChan[10]) nCH22CH10++;
+        if (HitChan[23]&&HitChan[10]) nCH23CH10++;
+        if (HitChan[27]&&HitChan[24]&&HitChan[29]) nCH27CH24CH29++; // Three hits within a layer
+        if (HitChan[27]&&HitChan[25]&&HitChan[29]) nCH27CH25CH29++;
+        if (HitChan[30]&&HitChan[16]&&HitChan[19]) nCH30CH16CH19++;
+        if (HitChan[30]&&HitChan[17]&&HitChan[19]) nCH30CH17CH19++;
+        if (HitChan[31]&&HitChan[22]&&HitChan[26]) nCH31CH22CH26++;
+        if (HitChan[31]&&HitChan[23]&&HitChan[26]) nCH31CH23CH26++;
+        if (HitChan[24]&&HitChan[16]&&HitChan[22]) nCH24CH16CH22++; // Hits across 3 layers
+        if (HitChan[24]&&HitChan[16]&&HitChan[23]) nCH24CH16CH23++;
+        if (HitChan[24]&&HitChan[17]&&HitChan[23]) nCH24CH17CH23++;
+        if (HitChan[24]&&HitChan[17]&&HitChan[22]) nCH24CH17CH22++;
+        if (HitChan[25]&&HitChan[17]&&HitChan[23]) nCH25CH17CH23++;
+        if (HitChan[25]&&HitChan[16]&&HitChan[23]) nCH25CH16CH23++;
+        if (HitChan[25]&&HitChan[16]&&HitChan[22]) nCH25CH16CH22++;
+        if (HitChan[18]&&HitChan[20]) nCH18CH20++; // Two hits between slabs
+        if (HitChan[20]&&HitChan[28]) nCH20CH28++;
+        if (HitChan[28]&&HitChan[21]) nCH28CH21++;
+        if (HitChan[18]&&HitChan[28]) nCH18CH28++;
+        if (HitChan[20]&&HitChan[21]) nCH20CH21++;
+        if (HitChan[18]&&HitChan[21]) nCH18CH21++;
+        if (HitChan[18]&&HitChan[20]&&HitChan[28]) nCH18CH20CH28++; // Hits across slab layers
+        if (HitChan[20]&&HitChan[28]&&HitChan[21]) nCH20CH28CH21++;
+        if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]) nCH18CH20CH28CH21++; 
+        if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
+            HitChan[0]&&HitChan[6]&&HitChan[2]) nCH18CH20CH28CH21CH0CH6CH2++; 
+        if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
+            HitChan[1]&&HitChan[7]&&HitChan[3]) nCH18CH20CH28CH21CH1CH7CH3++; 
+        if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
+            HitChan[24]&&HitChan[16]&&HitChan[22]) nCH18CH20CH28CH21CH24CH16CH22++; 
+        if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
+            HitChan[25]&&HitChan[17]&&HitChan[23]) nCH18CH20CH28CH21CH25CH17CH23++; 
+        if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
+            HitChan[12]&&HitChan[4]) nCH18CH20CH28CH21CH12CH4++; 
+        if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
+            HitChan[9]&&HitChan[13]&&HitChan[5]) nCH18CH20CH28CH21CH9CH13CH5++; 
+        if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
+            (HitChan[0]||HitChan[1]||HitChan[24]||HitChan[25]||HitChan[8]||HitChan[9])&&
+            (HitChan[6]||HitChan[7]||HitChan[16]||HitChan[17]||HitChan[12]||HitChan[13])&&
+            (HitChan[2]||HitChan[3]||HitChan[22]||HitChan[23]||HitChan[4]||HitChan[5]) ) {
+            nAllSlabsAllLayers++;
+            if (evtCategoryCode==4) 
+                cout << "AllSlabsAllLayers event: makeDisplays.py "<<RunNum<<" 1 -s "<<'"'<<"file=="<<filenum<<"&&event=="<<event<<'"'<<" -r 0 640 --noBounds --tag AllSlabsAllLayers\n";
+        }
+        if (HitChan[18]&&HitChan[20]&&HitChan[28]&&HitChan[21]&&
+            (HitChan[0]||HitChan[1]||HitChan[24]||HitChan[25]||HitChan[8]||HitChan[9]||
+             HitChan[6]||HitChan[7]||HitChan[16]||HitChan[17]||HitChan[12]||HitChan[13]||
+             HitChan[2]||HitChan[3]||HitChan[22]||HitChan[23]||HitChan[4]||HitChan[5]) )
+            nAllSlabsAnyLayer++;
+        if ((HitChan[18]||HitChan[20]||HitChan[28]||HitChan[21])&&
+            (HitChan[0]||HitChan[1]||HitChan[24]||HitChan[25]||HitChan[8]||HitChan[9])&&
+            (HitChan[6]||HitChan[7]||HitChan[16]||HitChan[17]||HitChan[12]||HitChan[13])&&
+            (HitChan[2]||HitChan[3]||HitChan[22]||HitChan[23]||HitChan[4]||HitChan[5]) )
+            nAllLayersAnySlab++;
+ 
+        // Dump an ANT for mergine with the hodoscope data
+        if (evtCategoryCode==0 && RangeCode == "A") { // TS1 ANT
+            cout <<setprecision(4);
+            cout << "\nTS1:";
+            cout << run<<" "; // 1
+            cout << filenum<<" "; // 2
+            cout << event<<" "; // 3
+            cout << ia<<" "; // 4
+            cout <<beam<<" "; // 5
+            cout << long(1000*(event_time_fromTDC))<<" "; // 6; Event time in milliseconds
+            cout << timeBetweenEvents<<" "; // 7; Time between events in microseconds
+            cout << event_trigger_time_tag_b0 << " "; // 8; Time for digitizer 0
+            cout << event_trigger_time_tag_b1 << " "; // 9; Time for digitizer 1
+            cout << event_trigger_time_tag_b0-prev_event_trigger_time_tag_b0 << " "; // 10; Time between events for dig0
+            cout << event_trigger_time_tag_b1-prev_event_trigger_time_tag_b1 << " "; // 11; Time between events for dig0
+            prev_event_trigger_time_tag_b0 = event_trigger_time_tag_b0;
+            prev_event_trigger_time_tag_b1 = event_trigger_time_tag_b1;
+            cout << event_trigger_time_tag_b1-event_trigger_time_tag_b0<<" "; // 12; TTT mismatch between boards
+
+            cout << groupTDC_b0->at(0) << " "; // 13; gTDC for digitizer 0
+            cout << groupTDC_b1->at(0) << " "; // 14; gTDC for digitizer 1
+            cout << groupTDC_b0->at(0)-prev_gTDC_b0 << " "; // 15; gTDC diff from prev event for dig 0
+            cout << groupTDC_b1->at(0)-prev_gTDC_b1 << " "; // 16; gTDC diff from prev event for dig 0
+            prev_gTDC_b0 = groupTDC_b0->at(0);
+            prev_gTDC_b1 = groupTDC_b1->at(0);
+            cout << groupTDC_b1->at(0)-groupTDC_b0->at(0) << " "; // 17; gTDC mismatch between boards
+
+            for (int c=0; c<32; c++) {
+                cout << " "<<maxSample[c];
+                cout << " "<<TotalArea[c];
+            }
+            cout << "\n";
+        } // TS1 ANT
     } //end over loop over all the events
 
     outFile->cd();
@@ -1056,7 +1049,7 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
 }
 
 
-bool isGoodEvent(int evtCategoryCode, int nHits, bool *HitChan, float *maxSample, TString EventCategory, TString LHCStatus, int RunNum) 
+bool isGoodEvent(int nHits, bool *HitChan, float *maxSample, TString EventCategory, TString LHCStatus, int RunNum) 
 {
     bool GoodEvent = true;
     if (run==24 && event<20) GoodEvent = false;
@@ -1075,13 +1068,13 @@ bool isGoodEvent(int evtCategoryCode, int nHits, bool *HitChan, float *maxSample
             GoodEvent = false;
     }
 
-    if ((evtCategoryCode == 0) && (nHits<1)) GoodEvent = false; // All category
-    if ((evtCategoryCode == 1) && (nHits>0)) GoodEvent = false; // SPE category; No hits above the threshold
+    if ((EventCategory == "All") && (nHits<1)) GoodEvent = false; // All category
+    if ((EventCategory == "SPE") && (nHits>0)) GoodEvent = false; // SPE category; No hits above the threshold
     if ((EventCategory == "Small") && (nHits<2)) GoodEvent = false; // Small category
     if ((EventCategory == "SmallTag") && (nHits<1)) GoodEvent = false; // SmallTag category
     if ((EventCategory == "Cosmic") && (nHits<2)) GoodEvent = false; // Cosmic category
     if ((EventCategory == "CosmicTag") && (nHits<2)) GoodEvent = false; // CosmicTag category
-    if ((evtCategoryCode == 4) && !(HitChan[18] && HitChan[20] && HitChan[28] && HitChan[21])) GoodEvent = false; // Through going particle category
+    if ((EventCategory == "Thru" || EventCategory == "ThruTag") && !(HitChan[18] && HitChan[20] && HitChan[28] && HitChan[21])) GoodEvent = false; // Through going particle category
     
     // Veto events based on the LHCStatus string
     if (LHCStatus=="Beam" && !beam) GoodEvent = false;
@@ -1954,5 +1947,15 @@ void NeighborHitMap(bool *NeighborHit, bool HitChan[], int RunNum, TString Event
                 NeighborHit[21] = true; // Slab 3
             }
     } // Looser selec
+}
+
+int GetEventCategoryCode(TString EventCategoryName)
+{
+    if (EventCategoryName == "All") return 0;
+    if (EventCategoryName == "SPE") return 1;
+    if ((EventCategoryName == "Small") || (EventCategoryName == "SmallTag")) return 2;
+    if ((EventCategoryName == "Cosmic") || (EventCategoryName == "CosmicTag")) return 3;
+    if ((EventCategoryName == "Thru") || (EventCategoryName == "ThruTag")) return 4;
+    return 0;
 }
 
