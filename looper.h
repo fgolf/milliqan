@@ -12,6 +12,27 @@
 #include <TFile.h>
 #include <TString.h>
 
+struct ChannelInfo {
+    int chan;
+    int layer;
+    int row;
+    int col;
+    int type; 
+    ChannelInfo() : chan(-99), layer(-99), row(-99), col(-99), type(-99) {}
+    ChannelInfo(int ch) : chan(ch) {this->SetChannel(ch);}
+    ChannelInfo(int l, int r, int c, int t) : layer(l), row(r), col(c), type(t) {this->SetLocation(l,r,c,t);}
+    ChannelInfo(int ch, int l, int r, int c, int t) : chan(ch), layer(l), row(r), col(c), type(t) {}
+    void SetChannel (int ch);
+    void SetLocation(int layer, int row, int col, int type);
+    int channelNumber ();
+    static int channelNumber (int layer, int row, int col, int type);
+    ChannelInfo channelLocation ();
+    static ChannelInfo channelLocation (int ch);
+    std::vector<ChannelInfo> neighbors();
+    static std::vector<ChannelInfo> neighbors(int ch);
+    static std::vector<ChannelInfo> neighbors(int l, int r, int c, int t);
+};
+
 void InitializeChain(TChain *fChain);
 int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, int nentries, int maxFile, double minTime, double maxTime);
 bool isGoodEvent(int nHits, bool *HitChan, float *maxSample, TString EventCategory, TString LHCStatus, int RunNum);
@@ -291,6 +312,31 @@ TH1D *h_TaggedDuration[32];
 TH1D *h_TripleLayerMax[32];
 TH1D *h_DoubleLayerMax[32];
 
+TH1D *h_pulseHeight[32];
+TH1D *h_pulseArea[32];
+TH1D *h_pulseDuration[32];
+TH1D *h_pulseNPE[32];
+TH1D *h_pulseTime[32];
+TH1D *h_firstPulseHeight[32];
+TH1D *h_firstPulseArea[32];
+TH1D *h_firstPulseDuration[32];
+TH1D *h_firstPulseNPE[32];
+TH1D *h_firstPulseTime[32];
+TH1D *h_maxPulseHeight[32];
+TH1D *h_maxPulseArea[32];
+TH1D *h_maxPulseDuration[32];
+TH1D *h_maxPulseNPE[32];
+TH1D *h_maxPulseTime[32];
+TH1D *h_npulsesPerChannel[32];
+TH1D *h_nhitsPerChannel[32];
+TH1D *h_diffTimeWithNeighboringMaxHit[32];
+TH1D *h_diffTimeWithNeighboringMaxHitCalibrated[32];
+TH1D *h_npulses[32];
+TH1D *h_nhits[32];
+TH1D *h_nchannelsWithAtLeastOnePulse[32];
+TH1D *h_nchannelsWithAtLeastOneHit[32];
+TH1D *h_ncosmics;
+
 void InitializeChain(TChain *fChain)
 {
    // Set object pointer
@@ -472,3 +518,190 @@ void reset_counters () {
     nAllLayersAnySlab=0; // All layers with at least one hit, and at least one slab hit
 }
 
+void ChannelInfo::SetChannel(int ch) {
+    this->chan = ch;
+    ChannelInfo tmp = this->channelLocation();
+    this->layer = tmp.layer;
+    this->row = tmp.row;
+    this->col = tmp.col;
+    this->type = tmp.type;
+}
+
+void ChannelInfo::SetLocation(int layer, int row, int col, int type) {
+    this->layer= layer;
+    this->row  = row;
+    this->col  = col;
+    this->type = type;
+    this->chan = this->channelNumber();
+}
+
+int ChannelInfo::channelNumber () {
+    if (this->chan > -99) return this->chan;
+    else return this->channelNumber(this->layer,this->row,this->col,this->type); 
+}
+
+int ChannelInfo::channelNumber(int layer, int row, int col, int type) {
+    if (type==0) {
+        if (layer==1) {
+            if (col==1) {
+                if (row==1) return 8;
+                if (row==2) return 24;
+                if (row==3) return 0;
+            }
+            if (col==2) {
+                if (row==1) return 9;
+                if (row==2) return 25;
+                if (row==3) return 1;
+            }
+        }
+        if (layer==2) {
+            if (col==1) {
+                if (row==1) return 12;
+                if (row==2) return 16;
+                if (row==3) return 6;
+            }
+            if (col==2) {
+                if (row==1) return 13;
+                if (row==2) return 17;
+                if (row==3) return 7;
+            }
+        }
+        if (layer==3) {
+            if (col==1) {
+                if (row==1) return 4;
+                if (row==2) return 22;
+                if (row==3) return 2;
+            }
+            if (col==2) {
+                if (row==1) return 5;
+                if (row==2) return 23;
+                if (row==3) return 3;
+            }
+        }
+    }
+    if (type==1) {
+        if (layer==0) return 18;
+        if (layer==1) return 20;
+        if (layer==2) return 28;
+        if (layer==3) return 21;
+    }
+    if (type==2) {
+        if (layer==1) {
+            if (col==-1) return 27;
+            if (col==0) return 10;
+            if (col==1) return 29;
+        }
+        if (layer==2) {
+            if (col==-1) return 30;
+            if (col==0) return 11;
+            if (col==1) return 19;
+        }
+        if (layer==3) {
+            if (col==-1) return 31;
+            if (col==0) return 14;
+            if (col==1) return 26;
+        }
+    }
+}
+
+ChannelInfo ChannelInfo::channelLocation() {
+    if (this->layer > -99 and this->row > -99 and this->col > -99 and this->type > -99)
+        return *this;
+    else
+        return this->channelLocation(this->chan); 
+}
+
+ChannelInfo ChannelInfo::channelLocation(int ch) {
+    // ChannelInfo(channel, layer, row, col, type)
+    if (ch == 0 ) return ChannelInfo(0 ,1,3,1,0);
+    if (ch == 1 ) return ChannelInfo(1 ,1,3,2,0);
+    if (ch == 2 ) return ChannelInfo(2 ,3,3,1,0);
+    if (ch == 3 ) return ChannelInfo(3 ,3,3,2,0);
+    if (ch == 4 ) return ChannelInfo(4 ,3,1,1,0);
+    if (ch == 5 ) return ChannelInfo(5 ,3,1,2,0);
+    if (ch == 6 ) return ChannelInfo(6 ,2,3,6,0);
+    if (ch == 7 ) return ChannelInfo(7 ,2,3,2,0);
+    if (ch == 8 ) return ChannelInfo(8 ,1,1,1,0);
+    if (ch == 9 ) return ChannelInfo(9 ,1,1,2,0);
+    if (ch == 10) return ChannelInfo(10,1,-2,0,2);
+    if (ch == 11) return ChannelInfo(11,2,-2,0,2);
+    if (ch == 12) return ChannelInfo(12,2,1,1,0);
+    if (ch == 13) return ChannelInfo(13,2,1,2,0);
+    if (ch == 14) return ChannelInfo(14,3,-2,0,2);
+    if (ch == 15) return ChannelInfo(15,-99,-1,0,0);
+    if (ch == 16) return ChannelInfo(16,2,2,1,0);
+    if (ch == 17) return ChannelInfo(17,2,2,2,0);
+    if (ch == 18) return ChannelInfo(18,0,-1,0,1);
+    if (ch == 19) return ChannelInfo(19,2,-2,1,2);
+    if (ch == 20) return ChannelInfo(20,1,-1,0,1);
+    if (ch == 21) return ChannelInfo(21,3,-1,0,1);
+    if (ch == 22) return ChannelInfo(22,3,2,1,0);
+    if (ch == 23) return ChannelInfo(23,3,2,2,0);
+    if (ch == 24) return ChannelInfo(24,1,2,1,0);
+    if (ch == 25) return ChannelInfo(25,1,2,2,0);
+    if (ch == 26) return ChannelInfo(26,3,-2,1,2);
+    if (ch == 27) return ChannelInfo(27,1,-2,-1,2);
+    if (ch == 28) return ChannelInfo(28,2,-1,0,1);
+    if (ch == 29) return ChannelInfo(29,1,-2,1,2);
+    if (ch == 30) return ChannelInfo(30,2,-2,-1,2);
+    if (ch == 31) return ChannelInfo(31,3,-2,-1,2);
+}
+
+std::vector<ChannelInfo> ChannelInfo::neighbors()
+{
+    std::vector<ChannelInfo> ret;
+    int l = this->layer;
+    int r = this->row;
+    int c = this->col;
+    int t = this->type;
+    
+    // bars first
+    if (t==0) { 
+        for (int i=1;i<=3;i++) {
+            if (i==r) continue;
+            ret.push_back(ChannelInfo(layer,i,c,0));
+        }
+        ret.push_back(ChannelInfo(layer,-2,0,2));
+    }
+    return ret;
+}
+
+std::vector<ChannelInfo> ChannelInfo::neighbors(int ch)
+{
+    std::vector<ChannelInfo> ret;
+    ChannelInfo tmp(ch);
+    int l = tmp.layer;
+    int r = tmp.row;
+    int c = tmp.col;
+    int t = tmp.type;
+    
+    // bars first
+    if (t==0) { 
+        for (int i=1;i<=3;i++) {
+            if (i==r) continue;
+            ret.push_back(ChannelInfo(l,i,c,0));
+        }
+        ret.push_back(ChannelInfo(l,-2,0,2));
+    }
+    return ret;
+}
+
+std::vector<ChannelInfo> ChannelInfo::neighbors(int layer, int row, int col, int type)
+{
+    std::vector<ChannelInfo> ret;
+    ChannelInfo tmp(layer,row,col,type);
+    int l = tmp.layer;
+    int r = tmp.row;
+    int c = tmp.col;
+    int t = tmp.type;
+    
+    // bars first
+    if (t==0) { 
+        for (int i=1;i<=3;i++) {
+            if (i==r) continue;
+            ret.push_back(ChannelInfo(l,i,c,0));
+        }
+        ret.push_back(ChannelInfo(l,-2,0,2));
+    }
+    return ret;
+}

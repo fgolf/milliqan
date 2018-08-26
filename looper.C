@@ -214,9 +214,11 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
         // Build a map of hits above thresholds appropriate for the passed event category, and record the pulse number; consider only the first pulse in each channel.
         bool HitChan[32]; // Simple flag showing existence of a hit
         int ChanHitIndex[32]; // Index to the pulse with the hit
+        int ChanHitCount[32]; // count of pulses per channel passing requirements for a hit
         int nHits=0; // Number of channels with hits
         for (int c=0; c<32; c++) {
             ChanHitIndex[c] = -1; // No hit
+            ChanHitCount[c] = 0; // No hit
             HitChan[c] = false;
         }
         for (int c=0; c<32; c++) {
@@ -225,6 +227,7 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
                     (maxSample[c] > VThresholds[c][evtCategoryCode]) && (TotalArea[c] > AThresholds[c][evtCategoryCode])) { // Appropriate hit in this channel?
                     HitChan[c] = true;
                     ChanHitIndex[c] = i;
+                    ChanHitCount[c] += 1;
                 }
             }
             if (HitChan[c]) nHits++;
@@ -522,6 +525,134 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
             } // nHits>=4
         } // Cosmic step
 
+        /******************************************************************************************************************************************************
+        **** Insert cosmics study code here                                                                                                                ****
+        ****                                                                                                                                               ****
+        **** 1. Require event is good                                                                                                                      ****
+        **** 2. Require event pass selection                                                                                                               ****
+        ****    - look at bars in middle row of each layer, these are the "probes"                                                                         ****
+        ****    - "Cosmic": require bars on either side (bottom,top rows) in same column have a hit                                                        ****
+        ****    - "CosmicTag": "Cosmic" selection AND require that "top" sheet also has a hit                                                              ****
+        **** 3. Fill histograms:                                                                                                                           ****
+        ****    - height, area, duration, NPE per pulse per channel                                                                                        ****
+        ****    - height, area, duration, NPE first pulse per channel                                                                                      ****
+        ****    - height, area, duration, NPE max pulse per channel                                                                                        ****
+        ****    - number of pulses, per channel and whole detector                                                                                         ****
+        ****    - time relative to pulses in neighboring channels                                                                                          ****
+        ****    - compare beam and non-beam periods                                                                                                        ****
+        ****                                                                                                                                               ****
+        ******************************************************************************************************************************************************/
+
+        // check if event is good
+        if (not GoodEvent) continue;
+    
+        //int middleChannels[] = {16,17,22,23,24,25}; // channel numbers of bars in middle rows
+
+        // get index of max pulse in each channel
+        int num_pulses = int(ipulse->size());
+        int npulses_tot = 0;
+        int nhits_tot = 0;
+        int nchannels_with_hit = 0;
+        int nchannels_with_pulse = 0;
+        int max_pulse_index[32] = {-1};
+        bool found_chan[32] = {false};
+        int ncosmictags = 0;
+        for (int c=0; c<32; c++) {
+            nhits_tot += ChanHitCount[c];
+            for (int i=0; i<num_pulses; i++) {
+                if (chan->at(i) != c) continue;
+                if (not found_chan[c]) {
+                    found_chan[c] = true;
+                    npulses_tot += npulses->at(i);
+                    ++nchannels_with_pulse;
+                }
+                if (max_pulse_index[c] == -1)
+                    max_pulse_index[c] = i;
+                else {
+                    if (area->at(i) > area->at(max_pulse_index[c]))
+                        max_pulse_index[c] = i;
+                }
+            } // pulse loop
+
+            if (HitChan[c]) ++nchannels_with_hit;
+
+            // fill histograms for maximum pulse (height) in each channel c
+            if (NeighborHit[c]) {
+                ++ncosmictags;
+                h_npulsesPerChannel[c]->Fill(npulses->at(c));
+                h_nhitsPerChannel[c]->Fill(ChanHitCount[c]);
+                if (max_pulse_index[c] >= 0) {
+                    h_maxPulseHeight[c]->Fill(height->at(max_pulse_index[c]));
+                    h_maxPulseArea[c]->Fill(area->at(max_pulse_index[c])/1000.);
+                    h_maxPulseDuration[c]->Fill(duration->at(max_pulse_index[c]));
+                    h_maxPulseNPE[c]->Fill(nPE->at(max_pulse_index[c]));
+                    h_maxPulseTime[c]->Fill(ptime->at(max_pulse_index[c]));
+                }
+            }
+        } // channel loop
+
+        h_ncosmics->Fill(ncosmictags);
+
+        for (int c=0; c<32; c++) {
+            if (max_pulse_index[c] < 0) continue;
+            if (not NeighborHit[c]) continue;
+
+            h_npulses[c]->Fill(npulses_tot);
+            h_nhits[c]->Fill(nhits_tot);
+            h_nchannelsWithAtLeastOnePulse[c]->Fill(nchannels_with_pulse);
+            h_nchannelsWithAtLeastOneHit[c]->Fill(nchannels_with_hit);
+
+            std::vector<ChannelInfo> neighbors = ChannelInfo::neighbors(c);
+            for (auto chinfo : neighbors) {
+                if (EventCategory == "Cosmics" and chinfo.type != 0) continue; // only consider pulses in bars for event category "Cosmics"
+                if (not HitChan[chinfo.chan]) continue; // require that there is a hit in the neighboring channel
+                if (c==chinfo.chan) {
+                    std::cout << "Found hit in chan " << c << " with hit in neighboring element with same channel number." << std::endl;
+                    continue;
+                }
+                if (chinfo.chan < 0) {
+                    std::cout << "Found hit in chan " << c << " with hit in neighboring element with negative channel number: " << chinfo.chan << "." << std::endl;
+                    continue;
+                } 
+                if (max_pulse_index[c] < 0 or max_pulse_index[chinfo.chan] < 0) {
+                    std::cout << "Did not find a maximum pulse in channel " << c << " or channel " << chinfo.chan << std::endl;
+                    continue;
+                }
+                double tdiff = ptime->at(max_pulse_index[c]) - ptime->at(max_pulse_index[chinfo.chan]);
+                h_diffTimeWithNeighboringMaxHit[c]->Fill(tdiff);                
+    
+                double tdiff_calib = time_module_calibrated->at(max_pulse_index[c]) - time_module_calibrated->at(max_pulse_index[chinfo.chan]);
+                h_diffTimeWithNeighboringMaxHitCalibrated[c]->Fill(tdiff_calib); 
+            } // neighbor loop
+        } // channel loop
+
+        for (int i=0; i<num_pulses; i++) {
+            int c = int(chan->at(i));
+            if (not NeighborHit[c]) continue;
+             
+            // fill histograms for each pulse in channel c
+            h_pulseHeight[c]->Fill(height->at(i));
+            h_pulseArea[c]->Fill(area->at(i)/1000.);
+            h_pulseDuration[c]->Fill(duration->at(i));
+            h_pulseNPE[c]->Fill(nPE->at(i));
+            h_pulseTime[c]->Fill(ptime->at(i));
+    
+            // fill histograms for first pulse in channel c
+            if (ipulse->at(i) == 0) {
+                h_firstPulseHeight[c]->Fill(height->at(i));
+                h_firstPulseArea[c]->Fill(area->at(i)/1000.);
+                h_firstPulseDuration[c]->Fill(duration->at(i));
+                h_firstPulseNPE[c]->Fill(nPE->at(i));
+                h_firstPulseTime[c]->Fill(ptime->at(i));
+            } 
+        }
+
+        /*******************************************************************************************************************************************************
+        ****                                                                                                                                                ****
+        ****                                              END OF COSMICS STUDY                                                                              ****
+        ****                                                                                                                                                ****
+        *******************************************************************************************************************************************************/
+    
         // Plots of max sample for tagged channels
         for (int c=0; c<32; c++)
             if (NeighborHit[c] && maxSample[c]>0.5*VThresholds[c][evtCategoryCode]) h_TaggedMax[c]->Fill(maxSample[c],1.);
@@ -777,6 +908,8 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
             (HitChan[2]||HitChan[3]||HitChan[22]||HitChan[23]||HitChan[4]||HitChan[5]) )
             nAllLayersAnySlab++;
  
+
+
         // Dump an ANT for mergine with the hodoscope data
         if (evtCategoryCode==0 && RangeCode == "A") { // TS1 ANT
             cout <<setprecision(4);
@@ -1072,8 +1205,7 @@ bool isGoodEvent(int nHits, bool *HitChan, float *maxSample, TString EventCatego
     if ((EventCategory == "SPE") && (nHits>0)) GoodEvent = false; // SPE category; No hits above the threshold
     if ((EventCategory == "Small") && (nHits<2)) GoodEvent = false; // Small category
     if ((EventCategory == "SmallTag") && (nHits<1)) GoodEvent = false; // SmallTag category
-    if ((EventCategory == "Cosmic") && (nHits<2)) GoodEvent = false; // Cosmic category
-    if ((EventCategory == "CosmicTag") && (nHits<2)) GoodEvent = false; // CosmicTag category
+    if ((EventCategory == "Cosmic" || EventCategory == "CosmicTag") && (nHits<2)) GoodEvent = false; // Cosmic category
     if ((EventCategory == "Thru" || EventCategory == "ThruTag") && !(HitChan[18] && HitChan[20] && HitChan[28] && HitChan[21])) GoodEvent = false; // Through going particle category
     
     // Veto events based on the LHCStatus string
@@ -1489,6 +1621,105 @@ int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, 
     for (int c=0; c<32; c++)
         h_DoubleLayerMax[c] = new TH1D(EventCategory+"_"+LHCStatus+"_DoubleLayerMax_"+ChStr[c]+"_"+RangeCode,"Max sample in DoubleLayer Channel "+ChStr[c]+partnerThresholdStr,nBins,minX,maxX);
     nhists += 32;
+
+    
+    /*******************************************************************************************************************************************************
+    ****                                                                                                                                                ****
+    ****                                              BOOK HISTOS FOR COSMICS STUDY                                                                     ****
+    ****                                                                                                                                                ****
+    *******************************************************************************************************************************************************/
+
+    if (RangeCode == "A") { nBins = 140; minX = 0.; maxX = 1400.; }
+    if (RangeCode == "B") { nBins = 50; minX = 0.; maxX = 500.; }
+    if (RangeCode == "C") { nBins = 50; minX = 0.; maxX = 100.; }
+    if (RangeCode == "D") { nBins = 40; minX = 0.; maxX = 40.; }
+    for (int c=0; c<32; c++) {
+        h_pulseHeight[c] = new TH1D(EventCategory+"_"+LHCStatus+"_pulseHeight_"+ChStr[c]+"_"+RangeCode,"Height of each pulse in channel"+ChStr[c]+partnerThresholdStr,nBins,minX,maxX);;
+        h_firstPulseHeight[c] = new TH1D(EventCategory+"_"+LHCStatus+"_firstPulseHeight_"+ChStr[c]+"_"+RangeCode,"Height of first pulse in channel"+ChStr[c]+partnerThresholdStr,nBins,minX,maxX);;
+        h_maxPulseHeight[c] = new TH1D(EventCategory+"_"+LHCStatus+"_maxPulseHeight_"+ChStr[c]+"_"+RangeCode,"Height of max (area) pulse in channel"+ChStr[c]+partnerThresholdStr,nBins,minX,maxX);;
+    }
+    nhists += 32*3;
+
+    if (RangeCode == "A") { nBins = 400; minX = 0.; maxX = 200.; }
+    if (RangeCode == "B") { nBins = 200; minX = 0.; maxX = 40.; }
+    if (RangeCode == "C") { nBins = 250; minX = 0.; maxX = 5.; }
+    if (RangeCode == "D") { nBins = 100; minX = 0.; maxX = 0.5; }
+    for (int c=0; c<32; c++) {
+        h_pulseArea[c] = new TH1D(EventCategory+"_"+LHCStatus+"_pulseArea_"+ChStr[c]+"_"+RangeCode,"Area of each pulse in channel"+ChStr[c],nBins,minX,maxX);
+        h_firstPulseArea[c] = new TH1D(EventCategory+"_"+LHCStatus+"_firstPulseArea_"+ChStr[c]+"_"+RangeCode,"Area of first pulse in channel"+ChStr[c],nBins,minX,maxX);
+        h_maxPulseArea[c] = new TH1D(EventCategory+"_"+LHCStatus+"_maxPulseArea_"+ChStr[c]+"_"+RangeCode,"Area of max (area) pulse in channel"+ChStr[c],nBins,minX,maxX);
+    }
+    nhists += 32*3;
+
+    if (RangeCode == "A") { nBins = 128; minX = 0.; maxX = 640.; }
+    if (RangeCode == "B") { nBins = 64; minX = 0.; maxX = 160.; }
+    if (RangeCode == "C") { nBins = 32; minX = 0.; maxX = 40.; }
+    if (RangeCode == "D") { nBins = 32; minX = 0.; maxX = 20.; }
+    for (int c=0; c<32; c++) {
+        h_pulseDuration[c] = new TH1D(EventCategory+"_"+LHCStatus+"_pulseDuration_"+ChStr[c]+"_"+RangeCode,"Duration of each pulse in channel"+ChStr[c],nBins,minX,maxX);
+        h_firstPulseDuration[c] = new TH1D(EventCategory+"_"+LHCStatus+"_firstPulseDuration_"+ChStr[c]+"_"+RangeCode,"Duration of first pulse in channel"+ChStr[c],nBins,minX,maxX);
+        h_maxPulseDuration[c] = new TH1D(EventCategory+"_"+LHCStatus+"_maxPulseDuration_"+ChStr[c]+"_"+RangeCode,"Duration of max (area) pulse in channel"+ChStr[c],nBins,minX,maxX);
+    }
+    nhists += 32*3;
+
+    if (RangeCode == "A") { nBins = 400; minX = 0.; maxX = 1000.; }
+    if (RangeCode == "B") { nBins = 200; minX = 0.; maxX = 100.; }
+    if (RangeCode == "C") { nBins = 250; minX = 0.; maxX = 10.; }
+    if (RangeCode == "D") { nBins = 60; minX = 0.; maxX = 3.; }
+    for (int c=0; c<32; c++) {
+        h_pulseNPE[c] = new TH1D(EventCategory+"_"+LHCStatus+"_pulseNPE_"+ChStr[c]+"_"+RangeCode,"NPE of each pulse in channel"+ChStr[c],nBins,minX,maxX);
+        h_firstPulseNPE[c] = new TH1D(EventCategory+"_"+LHCStatus+"_firstPulseNPE_+"+ChStr[c]+"_"+RangeCode,"NPE of first pulse in channel"+ChStr[c],nBins,minX,maxX);
+        h_maxPulseNPE[c] = new TH1D(EventCategory+"_"+LHCStatus+"_maxPulseNPE_"+ChStr[c]+"_"+RangeCode,"NPE of max (area) pulse in channel"+ChStr[c],nBins,minX,maxX);
+    }
+    nhists += 32*3;
+
+    if (RangeCode == "A") { nBins = 512; minX = 0.; maxX = 1024*0.625; }
+    if (RangeCode == "B") { nBins = 50; minX = 0.; maxX = 200.; }
+    if (RangeCode == "C") { nBins = 50; minX = 150.; maxX = 300.; }
+    if (RangeCode == "D") { nBins = 50; minX = 300.; maxX = 450.; }
+    for (int c=0; c<32; c++) {
+        h_pulseTime[c] = new TH1D(EventCategory+"_"+LHCStatus+"_pulseTime_"+ChStr[c]+"_"+RangeCode,"Time of each pulse in channel "+ChStr[c],nBins,minX,maxX);
+        h_firstPulseTime[c] = new TH1D(EventCategory+"_"+LHCStatus+"_firstPulseTime_"+ChStr[c]+"_"+RangeCode,"Time of first pulse in channel "+ChStr[c],nBins,minX,maxX);
+        h_maxPulseTime[c] = new TH1D(EventCategory+"_"+LHCStatus+"_maxPulseTime_"+ChStr[c]+"_"+RangeCode,"Time of max (area) pulse in channel "+ChStr[c],nBins,minX,maxX);
+    }
+    nhists += 32*3;
+
+    if (RangeCode == "A") { nBins = 21; minX = -0.5; maxX = 20.5; }
+    if (RangeCode == "B") { nBins = 11; minX = -0.5; maxX = 10.5; }
+    if (RangeCode == "C") { nBins = 6; minX = -0.5; maxX = 5.5; }
+    if (RangeCode == "D") { nBins = 4; minX = -0.5; maxX = 3.5; }
+    for (int c=0; c<32; c++) {
+        h_npulsesPerChannel[c] = new TH1D(EventCategory+"_"+LHCStatus+"_npulsesPerChannel_"+ChStr[c]+"_"+RangeCode,"Number of pulses in channel "+ChStr[c],nBins,minX,maxX);
+        h_nhitsPerChannel[c] = new TH1D(EventCategory+"_"+LHCStatus+"_nhitsPerChannel_"+ChStr[c]+"_"+RangeCode,"Number of hits in channel "+ChStr[c],nBins,minX,maxX);
+        h_npulses[c] = new TH1D(EventCategory+"_"+LHCStatus+"_npulses_"+ChStr[c]+"_"+RangeCode,"Number of pulses in detector when tagged channel"+ChStr[c],nBins,minX,maxX);
+        h_nhits[c] = new TH1D(EventCategory+"_"+LHCStatus+"_nhits_"+ChStr[c]+"_"+RangeCode,"Number of hits in detector when tagged channel "+ChStr[c],nBins,minX,maxX);
+        h_nchannelsWithAtLeastOnePulse[c] = new TH1D(EventCategory+"_"+LHCStatus+"_nchannelsWithAtLeastOnePulse_"+ChStr[c]+"_"+RangeCode,"Number of channels with at least one pulse when tagged channel"+ChStr[c],nBins,minX,maxX);
+        h_nchannelsWithAtLeastOneHit[c] = new TH1D(EventCategory+"_"+LHCStatus+"_nchannelsWithAtLeastOneHit_"+ChStr[c]+"_"+RangeCode,"Number of channels with at least one hitwhen tagged channel"+ChStr[c],nBins,minX,maxX);
+    }
+    nhists += 32*6;
+
+    if (RangeCode == "A") { nBins = 200; minX = -200.; maxX = 200.; }
+    if (RangeCode == "B") { nBins = 50; minX = -200.; maxX = 200.; }
+    if (RangeCode == "C") { nBins = 50; minX = -50.; maxX = 50.; }
+    if (RangeCode == "D") { nBins = 30; minX = -30.; maxX = 30.; }
+    for (int c=0; c<32; c++) {
+        h_diffTimeWithNeighboringMaxHit[c] = new TH1D(EventCategory+"_"+LHCStatus+"_diffTimeWithNeighborMaxHit_"+ChStr[c]+"_"+RangeCode,"Number of pulses in channel "+ChStr[c],nBins,minX,maxX);
+        h_diffTimeWithNeighboringMaxHitCalibrated[c] = new TH1D(EventCategory+"_"+LHCStatus+"_diffTimeWithNeighborMaxHitCalibrated_"+ChStr[c]+"_"+RangeCode,"Number of pulses in channel "+ChStr[c],nBins,minX,maxX);
+    }
+    nhists += 32*2;
+
+    if (RangeCode == "A") { nBins = 21; minX = -0.5; maxX = 20.5; }
+    if (RangeCode == "B") { nBins = 11; minX = -0.5; maxX = 10.5; }
+    if (RangeCode == "C") { nBins = 6; minX = -0.5; maxX = 5.5; }
+    if (RangeCode == "D") { nBins = 4; minX = -0.5; maxX = 3.5; }
+    h_ncosmics = new TH1D(EventCategory+"_"+LHCStatus+"_ncosmics"+RangeCode,"Number of cosmic muon tags",nBins,minX,maxX);
+    ++nhists;
+
+    /*******************************************************************************************************************************************************
+    ****                                                                                                                                                ****
+    ****                                              END HISTOS FOR COSMICS STUDY                                                                      ****
+    ****                                                                                                                                                ****
+    *******************************************************************************************************************************************************/
 
     return nhists;
 }
