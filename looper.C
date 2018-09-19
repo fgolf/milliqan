@@ -15,6 +15,7 @@
 #include <vector>
 #include <string>
 #include <sstream>
+#include <algorithm>
 #include "TString.h"
 #include "TVector3.h"
 
@@ -23,7 +24,7 @@
 
 using namespace std;
 
-void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString LHCStatus,TString RangeCode, int RunNum)
+void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString LHCStatus,TString RangeCode, int RunNum, int Nevents=-1)
 {
     int debug=0; // Debugging level. 0=none, 100=trace, 300=detailed trace
 
@@ -70,7 +71,7 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
     InitializeChain(chain);
 
     //Number of events to loop over
-    Int_t nentries = (Int_t)chain->GetEntries();
+    Int_t nentries = (Nevents < 0) ? (Int_t)chain->GetEntries() : std::min(Nevents,(int)chain->GetEntries());
     cout<<"The number of entries is: "<<nentries<<endl;
 
     TFile *outFile = new TFile(output_filename.Data(),"UPDATE");
@@ -221,13 +222,18 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
             ChanHitCount[c] = 0; // No hit
             HitChan[c] = false;
         }
+        int PulseCount[c] = {0};
         for (int c=0; c<32; c++) {
             for (int i=0; i<int(chan->size()); i++) {// Pulse loop 
-                if ((chan->at(i) == c) && (duration->at(i) > DThresholds[c][evtCategoryCode]) &&
-                    (maxSample[c] > VThresholds[c][evtCategoryCode]) && (TotalArea[c] > AThresholds[c][evtCategoryCode])) { // Appropriate hit in this channel?
-                    HitChan[c] = true;
-                    ChanHitIndex[c] = i;
-                    ChanHitCount[c] += 1;
+                if (chan->at(i) == c) {
+                    PulseCount[c] += 1; 
+                    // Appropriate hit in this channel?
+                    if ((duration->at(i) > DThresholds[c][evtCategoryCode]) && (maxSample[c] > VThresholds[c][evtCategoryCode]) && (TotalArea[c] > AThresholds[c][evtCategoryCode])) { 
+                        HitChan[c] = true;
+                        ChanHitCount[c] += 1;
+                        if (ChanHitIndex[c] == -1 or time[i] < time[ChanHitIndex[c]])
+                            ChanHitIndex[c] = i;
+                    }
                 }
             }
             if (HitChan[c]) nHits++;
@@ -579,15 +585,20 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
             // fill histograms for maximum pulse (height) in each channel c
             if (NeighborHit[c]) {
                 ++ncosmictags;
-                h_npulsesPerChannel[c]->Fill(npulses->at(c));
                 h_nhitsPerChannel[c]->Fill(ChanHitCount[c]);
                 if (max_pulse_index[c] >= 0) {
-                    h_maxPulseHeight[c]->Fill(height->at(max_pulse_index[c]));
-                    h_maxPulseArea[c]->Fill(area->at(max_pulse_index[c])/1000.);
-                    h_maxPulseDuration[c]->Fill(duration->at(max_pulse_index[c]));
-                    h_maxPulseNPE[c]->Fill(nPE->at(max_pulse_index[c]));
-                    h_maxPulseTime[c]->Fill(ptime->at(max_pulse_index[c]));
+                    int index = max_pulse_index[c];
+                    h_maxPulseHeight[c]->Fill(height->at(index));
+                    h_maxPulseArea[c]->Fill(area->at(index)/1000.);
+                    h_maxPulseDuration[c]->Fill(duration->at(index));
+                    h_maxPulseNPE[c]->Fill(nPE->at(index));
+                    h_maxPulseTime[c]->Fill(ptime->at(index));
+                    h_npulsesPerChannel[c]->Fill(npulses->at(index));
+                    if (npulses->at(index) != PulseCount[c])
+                        std::cout << "Problem counting number of pulses." << std::endl;
                 }
+                else
+                    h_npulsesPerChannel[c]->Fill(0);
             }
         } // channel loop
 
@@ -1668,7 +1679,7 @@ int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, 
     if (RangeCode == "D") { nBins = 60; minX = 0.; maxX = 3.; }
     for (int c=0; c<32; c++) {
         h_pulseNPE[c] = new TH1D(EventCategory+"_"+LHCStatus+"_pulseNPE_"+ChStr[c]+"_"+RangeCode,"NPE of each pulse in channel"+ChStr[c],nBins,minX,maxX);
-        h_firstPulseNPE[c] = new TH1D(EventCategory+"_"+LHCStatus+"_firstPulseNPE_+"+ChStr[c]+"_"+RangeCode,"NPE of first pulse in channel"+ChStr[c],nBins,minX,maxX);
+        h_firstPulseNPE[c] = new TH1D(EventCategory+"_"+LHCStatus+"_firstPulseNPE_"+ChStr[c]+"_"+RangeCode,"NPE of first pulse in channel"+ChStr[c],nBins,minX,maxX);
         h_maxPulseNPE[c] = new TH1D(EventCategory+"_"+LHCStatus+"_maxPulseNPE_"+ChStr[c]+"_"+RangeCode,"NPE of max (area) pulse in channel"+ChStr[c],nBins,minX,maxX);
     }
     nhists += 32*3;
@@ -1703,8 +1714,8 @@ int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, 
     if (RangeCode == "C") { nBins = 50; minX = -50.; maxX = 50.; }
     if (RangeCode == "D") { nBins = 30; minX = -30.; maxX = 30.; }
     for (int c=0; c<32; c++) {
-        h_diffTimeWithNeighboringMaxHit[c] = new TH1D(EventCategory+"_"+LHCStatus+"_diffTimeWithNeighborMaxHit_"+ChStr[c]+"_"+RangeCode,"Number of pulses in channel "+ChStr[c],nBins,minX,maxX);
-        h_diffTimeWithNeighboringMaxHitCalibrated[c] = new TH1D(EventCategory+"_"+LHCStatus+"_diffTimeWithNeighborMaxHitCalibrated_"+ChStr[c]+"_"+RangeCode,"Number of pulses in channel "+ChStr[c],nBins,minX,maxX);
+        h_diffTimeWithNeighboringMaxHit[c] = new TH1D(EventCategory+"_"+LHCStatus+"_diffTimeWithNeighborMaxHit_"+ChStr[c]+"_"+RangeCode,"Time difference between hits in this and neighboring channels"+ChStr[c],nBins,minX,maxX);
+        h_diffTimeWithNeighboringMaxHitCalibrated[c] = new TH1D(EventCategory+"_"+LHCStatus+"_diffTimeWithNeighborMaxHitCalibrated_"+ChStr[c]+"_"+RangeCode,"Calibrated time difference between hits in this and neighboring channels"+ChStr[c],nBins,minX,maxX);
     }
     nhists += 32*2;
 
@@ -1712,7 +1723,7 @@ int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, 
     if (RangeCode == "B") { nBins = 11; minX = -0.5; maxX = 10.5; }
     if (RangeCode == "C") { nBins = 6; minX = -0.5; maxX = 5.5; }
     if (RangeCode == "D") { nBins = 4; minX = -0.5; maxX = 3.5; }
-    h_ncosmics = new TH1D(EventCategory+"_"+LHCStatus+"_ncosmics"+RangeCode,"Number of cosmic muon tags",nBins,minX,maxX);
+    h_ncosmics = new TH1D(EventCategory+"_"+LHCStatus+"_ncosmics_"+RangeCode,"Number of cosmic muon tags",nBins,minX,maxX);
     ++nhists;
 
     /*******************************************************************************************************************************************************
@@ -1987,21 +1998,21 @@ void NeighborHitMap(bool *NeighborHit, bool HitChan[], int RunNum, TString Event
                 NeighborHit[4] = true;
             if (HitChan[3] && HitChan[23] && HitChan[14])
                 NeighborHit[5] = true;
-            if (HitChan[16] && HitChan[12] && HitChan[11])
+            if (HitChan[16] && HitChan[12] && HitChan[30])
                 NeighborHit[6] = true;
-            if (HitChan[17] && HitChan[13] && HitChan[11])
+            if (HitChan[17] && HitChan[13] && HitChan[30])
                 NeighborHit[7] = true;
             if (HitChan[0] && HitChan[24] && HitChan[10])
                 NeighborHit[8] = true;
             if (HitChan[1] && HitChan[25] && HitChan[10])
                 NeighborHit[9] = true;
-            if (HitChan[6] && HitChan[16] && HitChan[11])
+            if (HitChan[6] && HitChan[16] && HitChan[30])
                 NeighborHit[12] = true;
-            if (HitChan[7] && HitChan[17] && HitChan[11])
+            if (HitChan[7] && HitChan[17] && HitChan[30])
                 NeighborHit[13] = true;
-            if (HitChan[6] && HitChan[12] && HitChan[11])
+            if (HitChan[6] && HitChan[12] && HitChan[30])
                 NeighborHit[16] = true;
-            if (HitChan[7] && HitChan[13] && HitChan[11])
+            if (HitChan[7] && HitChan[13] && HitChan[30])
                 NeighborHit[17] = true;
             if (HitChan[2] && HitChan[4] && HitChan[14])
                 NeighborHit[22] = true;
@@ -2018,7 +2029,7 @@ void NeighborHitMap(bool *NeighborHit, bool HitChan[], int RunNum, TString Event
             if ((HitChan[0]&&HitChan[24]&&HitChan[8]) || (HitChan[1]&&HitChan[25]&&HitChan[9]))
                 NeighborHit[10] = true; // Panel L0 top
             if ((HitChan[6]&&HitChan[16]&&HitChan[12]) || (HitChan[7]&&HitChan[17]&&HitChan[13]))
-                NeighborHit[11] = true; // Panel L1 top
+                NeighborHit[30] = true; // Panel L1 top
             if ((HitChan[2]&&HitChan[22]&&HitChan[4]) || (HitChan[3]&&HitChan[23]&&HitChan[5]))
                 NeighborHit[14] = true; // Panel L2 top
     
@@ -2034,7 +2045,7 @@ void NeighborHitMap(bool *NeighborHit, bool HitChan[], int RunNum, TString Event
             if (HitChan[19] &&
                     (HitChan[6]||HitChan[16]||HitChan[12]) &&
                     (HitChan[7]||HitChan[17]||HitChan[13]))
-                NeighborHit[30] = true; // Panel L1 left
+                NeighborHit[11] = true; // Panel L1 left
             if (HitChan[30] &&
                     (HitChan[6]||HitChan[16]||HitChan[12]) &&
                     (HitChan[7]||HitChan[17]||HitChan[13]))
@@ -2058,10 +2069,8 @@ void NeighborHitMap(bool *NeighborHit, bool HitChan[], int RunNum, TString Event
                 NeighborHit[18] = true; // Slab1
                 NeighborHit[20] = true; // Slab0
             }
-            if ( (HitChan[16] && HitChan[12] && !HitChan[6] && !HitChan[11]) ||
-                    (HitChan[17] && HitChan[13] && !HitChan[7] && !HitChan[11]) ||
-                    (HitChan[6] && HitChan[16] && HitChan[11] && !HitChan[12]) ||
-                    (HitChan[7] && HitChan[17] && HitChan[11] && !HitChan[13]) ) {
+            if     ( (HitChan[6] && HitChan[16] && HitChan[30] && !HitChan[12] ) ||
+                   (HitChan[7] && HitChan[17] && HitChan[30] && !HitChan[13]) ) {
                 NeighborHit[20] = true; // Slab0
                 NeighborHit[28] = true; // Slab2
             }
@@ -2090,12 +2099,12 @@ void NeighborHitMap(bool *NeighborHit, bool HitChan[], int RunNum, TString Event
             if ((HitChan[3] && HitChan[23]) || (HitChan[23] && HitChan[14]) || (HitChan[3] && HitChan[14]))
                 NeighborHit[5] = true;
             if ((HitChan[16] && HitChan[12]) ||
-                    (HitChan[16] && HitChan[11]) ||
-                    (HitChan[12] && HitChan[11]))
+                    (HitChan[16] && HitChan[30]) ||
+                    (HitChan[12] && HitChan[30]))
                 NeighborHit[6] = true;
             if ((HitChan[17] && HitChan[13]) ||
-                    (HitChan[17] && HitChan[11]) ||
-                    (HitChan[13] && HitChan[11]))
+                    (HitChan[17] && HitChan[30]) ||
+                    (HitChan[13] && HitChan[30]))
                 NeighborHit[7] = true;
             if ((HitChan[0] && HitChan[24]) ||
                     (HitChan[10] && HitChan[24]) ||
@@ -2106,20 +2115,20 @@ void NeighborHitMap(bool *NeighborHit, bool HitChan[], int RunNum, TString Event
                     (HitChan[10] && HitChan[1]))
                 NeighborHit[9] = true;
             if ((HitChan[6] && HitChan[16]) ||
-                    (HitChan[11] && HitChan[16]) ||
-                    (HitChan[11] && HitChan[6]))
+                    (HitChan[30] && HitChan[16]) ||
+                    (HitChan[30] && HitChan[6]))
                 NeighborHit[12] = true;
             if ((HitChan[7] && HitChan[17]) ||
-                    (HitChan[11] && HitChan[17]) ||
-                    (HitChan[11] && HitChan[7]))
+                    (HitChan[30] && HitChan[17]) ||
+                    (HitChan[30] && HitChan[7]))
                 NeighborHit[13] = true;
             if ((HitChan[6] && HitChan[12]) ||
-                    (HitChan[11] && HitChan[12]) ||
-                    (HitChan[11] && HitChan[6]))
+                    (HitChan[30] && HitChan[12]) ||
+                    (HitChan[30] && HitChan[6]))
                 NeighborHit[16] = true;
             if ((HitChan[7] && HitChan[13]) ||
-                    (HitChan[11] && HitChan[13]) ||
-                    (HitChan[11] && HitChan[7]))
+                    (HitChan[30] && HitChan[13]) ||
+                    (HitChan[30] && HitChan[7]))
                 NeighborHit[17] = true;
             if ((HitChan[2] && HitChan[4]) || (HitChan[14] && HitChan[4]) || (HitChan[14] && HitChan[2]))
                 NeighborHit[22] = true;
@@ -2138,9 +2147,9 @@ void NeighborHitMap(bool *NeighborHit, bool HitChan[], int RunNum, TString Event
             if ((HitChan[6]&&HitChan[16]) || (HitChan[6]&&HitChan[12])  ||
                     (HitChan[16]&&HitChan[12]) || (HitChan[7]&&HitChan[17]) ||
                     (HitChan[7]&&HitChan[13]) || (HitChan[17]&&HitChan[13])) {
-                NeighborHit[11] = true; // Panel L1 top
+                NeighborHit[30] = true; // Panel L1 top
             }
-                NeighborHit[11] = true; // Panel L1 top
+                NeighborHit[30] = true; // Panel L1 top
             }
             if ((HitChan[2]&&HitChan[22]) || (HitChan[2]&&HitChan[4])  ||
                     (HitChan[22]&&HitChan[4]) || (HitChan[3]&&HitChan[23]) ||
@@ -2154,7 +2163,7 @@ void NeighborHitMap(bool *NeighborHit, bool HitChan[], int RunNum, TString Event
             }
             if ((HitChan[6]||HitChan[16]||HitChan[12]) && (HitChan[7]||HitChan[17]||HitChan[13])) {
                 NeighborHit[19] = true; // Panel L1 right
-                NeighborHit[30] = true; // Panel L1 left
+                NeighborHit[11] = true; // Panel L1 left
             }
             if ((HitChan[2]||HitChan[22]||HitChan[4]) && (HitChan[3]||HitChan[23]||HitChan[5])) {
                 NeighborHit[31] = true; // Panel L2 left

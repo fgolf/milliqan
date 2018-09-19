@@ -9,7 +9,8 @@
     std::string lhc_statuses[] = {"Beam","NoBeam"};
     std::string range_codes[] = {"A","B","C","D"};
     int run_number = 1078;
-    tree1r(ch,outfile,evt_categories[0],lhc_statuses[0],range_codes[0],run_number);
+    int max_events = -1;
+    tree1r(ch,outfile,evt_categories[0],lhc_statuses[0],range_codes[0],run_number,max_events);
     tree1r(ch,outfile,evt_categories[4],lhc_statuses[0],range_codes[0],run_number);
     tree1r(ch,outfile,evt_categories[5],lhc_statuses[0],range_codes[0],run_number);
     tree1r(ch,outfile,evt_categories[0],lhc_statuses[1],range_codes[0],run_number);

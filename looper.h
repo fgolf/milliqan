@@ -592,8 +592,8 @@ int ChannelInfo::channelNumber(int layer, int row, int col, int type) {
             if (col==1) return 29;
         }
         if (layer==2) {
-            if (col==-1) return 30;
-            if (col==0) return 11;
+            if (col==-1) return 11;
+            if (col==0) return 30;
             if (col==1) return 19;
         }
         if (layer==3) {
@@ -624,7 +624,7 @@ ChannelInfo ChannelInfo::channelLocation(int ch) {
     if (ch == 8 ) return ChannelInfo(8 ,1,1,1,0);
     if (ch == 9 ) return ChannelInfo(9 ,1,1,2,0);
     if (ch == 10) return ChannelInfo(10,1,-2,0,2);
-    if (ch == 11) return ChannelInfo(11,2,-2,0,2);
+    if (ch == 11) return ChannelInfo(11,2,-2,-1,2);
     if (ch == 12) return ChannelInfo(12,2,1,1,0);
     if (ch == 13) return ChannelInfo(13,2,1,2,0);
     if (ch == 14) return ChannelInfo(14,3,-2,0,2);
@@ -643,7 +643,7 @@ ChannelInfo ChannelInfo::channelLocation(int ch) {
     if (ch == 27) return ChannelInfo(27,1,-2,-1,2);
     if (ch == 28) return ChannelInfo(28,2,-1,0,1);
     if (ch == 29) return ChannelInfo(29,1,-2,1,2);
-    if (ch == 30) return ChannelInfo(30,2,-2,-1,2);
+    if (ch == 30) return ChannelInfo(30,2,-2,0,2);
     if (ch == 31) return ChannelInfo(31,3,-2,-1,2);
 }
 
