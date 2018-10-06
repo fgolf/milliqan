@@ -222,16 +222,16 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
             ChanHitCount[c] = 0; // No hit
             HitChan[c] = false;
         }
-        int PulseCount[c] = {0};
+        int PulseCount[32] = {0};
         for (int c=0; c<32; c++) {
             for (int i=0; i<int(chan->size()); i++) {// Pulse loop 
                 if (chan->at(i) == c) {
-                    PulseCount[c] += 1; 
-                    // Appropriate hit in this channel?
+                    PulseCount[c] += 1;
+                    // hit in this channel?
                     if ((duration->at(i) > DThresholds[c][evtCategoryCode]) && (maxSample[c] > VThresholds[c][evtCategoryCode]) && (TotalArea[c] > AThresholds[c][evtCategoryCode])) { 
                         HitChan[c] = true;
                         ChanHitCount[c] += 1;
-                        if (ChanHitIndex[c] == -1 or time[i] < time[ChanHitIndex[c]])
+                        if (ChanHitIndex[c] == -1 or ptime[i] < ptime[ChanHitIndex[c]])
                             ChanHitIndex[c] = i;
                     }
                 }
