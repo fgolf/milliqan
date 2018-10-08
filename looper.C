@@ -48,7 +48,7 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
     else { // Opened file successfully?  
         int ncol = 0;
         while (ncol >= 0) {
-            int intVal; Long64_t dVal; float fVal;
+            int intVal; long dVal; float fVal;
             ncol=fscanf(fillFile,"%d", &intVal);
             fillNum.push_back(intVal);
             ncol=fscanf(fillFile,"%li", &dVal);
@@ -81,7 +81,7 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
     if (debug>100) cout << "Booking histograms.\n";
 
     // Bins and ranges
-    int nBins; float minX, maxX;
+    int nBins = 1; float minX = 0; float maxX = 0;
     if (RangeCode == "A") { nBins = nentries/10; minX = 0.; maxX = 1.*(nentries); }
     if (RangeCode == "B") { nBins = nentries/50; minX = 0.; maxX = 1.*(nentries); }
     if (RangeCode == "C") { nBins = nentries/100; minX = 0.; maxX = 1.*(nentries); }
@@ -135,7 +135,7 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
     double runTime = SumTime;
 
     // book histograms
-    int nhists = bookHistograms(EventCategory, LHCStatus, RangeCode, nentries, maxFile, minTime, maxTime);
+    int nhists = bookHistograms(EventCategory, LHCStatus, RangeCode, maxFile, minTime, maxTime);
 
     // Determine the LHC fills present during this run. 
     // For now, only include fully contained fills...
@@ -231,7 +231,7 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
                     if ((duration->at(i) > DThresholds[c][evtCategoryCode]) && (maxSample[c] > VThresholds[c][evtCategoryCode]) && (TotalArea[c] > AThresholds[c][evtCategoryCode])) { 
                         HitChan[c] = true;
                         ChanHitCount[c] += 1;
-                        if (ChanHitIndex[c] == -1 or ptime[i] < ptime[ChanHitIndex[c]])
+                        if (ChanHitIndex[c] == -1 or ptime->at(i) < ptime->at(ChanHitIndex[c]))
                             ChanHitIndex[c] = i;
                     }
                 }
@@ -280,7 +280,7 @@ void tree1r(TChain *chain, TString output_filename,TString EventCategory,TString
             std::cout << "Found good event" << std::endl;
         
         // loop over channels
-        for (int c=0; c<32; c++) {
+        for (unsigned int c=0; c<32; c++) {
             // Plots of the raw MAX pulse height in each channel
             h_Max[c]->Fill(maxSample[c],1.);
 
@@ -1225,7 +1225,7 @@ bool isGoodEvent(int nHits, bool *HitChan, float *maxSample, TString EventCatego
     return GoodEvent;
 }
 
-int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, int nentries, int maxFile, double minTime, double maxTime) {
+int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, int maxFile, double minTime, double maxTime) {
     int nhists = 0;
 
     TString ChStr[32];
@@ -1238,8 +1238,8 @@ int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, 
     // Bins and ranges
     double minHour = minTime/3600;
     double maxHour = maxTime/3600;
-    int nBins;
-    float minX, maxX;
+    int nBins = 0;
+    float minX = 0, maxX = 0;
 
     // h_Max[32]
     // Plots of the max sample height, with several different range choices
@@ -1472,15 +1472,7 @@ int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, 
     if (RangeCode == "D") { nBins = 100; minX = 0.; maxX = 50.; }
     h_TotalGlobalPulseArea = new TH1D(EventCategory+"_"+LHCStatus+"_TotalGlobalPulseArea_"+RangeCode,"Total area of all pulses across detector",nBins,minX,maxX);
     ++nhists;
-/*
-    // h_EventNumberUnsynched
-    if (RangeCode == "A") { nBins = nentries/10; minX = 0.; maxX = 1.*(nentries); }
-    if (RangeCode == "B") { nBins = nentries/50; minX = 0.; maxX = 1.*(nentries); }
-    if (RangeCode == "C") { nBins = nentries/100; minX = 0.; maxX = 1.*(nentries); }
-    if (RangeCode == "D") { nBins = nentries/1000; minX = 0.; maxX = 1.*(nentries); }
-    h_EventNumberUnsynched = new TH1D(EventCategory+"_"+LHCStatus+"_EventNumberUnsynched_"+RangeCode,"Unsynched event numbers",nBins,minX,maxX);
-    ++nhists;
-*/
+
     // h_EventTime[32]
     if (RangeCode == "A") { nBins = 1000; minX = minHour - 0.5; maxX = maxHour + 2.; }
     if (RangeCode == "B") { nBins = 200; minX = minHour - 0.5; maxX = maxHour + 2.; }

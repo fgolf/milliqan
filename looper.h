@@ -34,7 +34,7 @@ struct ChannelInfo {
 };
 
 void InitializeChain(TChain *fChain);
-int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, int nentries, int maxFile, double minTime, double maxTime);
+int bookHistograms(TString EventCategory, TString LHCStatus, TString RangeCode, int maxFile, double minTime, double maxTime);
 bool isGoodEvent(int nHits, bool *HitChan, float *maxSample, TString EventCategory, TString LHCStatus, int RunNum);
 void NeighborHitMap(bool *NeighborHit, bool HitChan[], int RunNum, TString EventCategory);
 int GetEventCategoryCode(TString EventCategoryName);
@@ -579,13 +579,13 @@ int ChannelInfo::channelNumber(int layer, int row, int col, int type) {
             }
         }
     }
-    if (type==1) {
+    else if (type==1) {
         if (layer==0) return 18;
         if (layer==1) return 20;
         if (layer==2) return 28;
         if (layer==3) return 21;
     }
-    if (type==2) {
+    else if (type==2) {
         if (layer==1) {
             if (col==-1) return 27;
             if (col==0) return 10;
@@ -602,6 +602,7 @@ int ChannelInfo::channelNumber(int layer, int row, int col, int type) {
             if (col==1) return 26;
         }
     }
+    return -1;
 }
 
 ChannelInfo ChannelInfo::channelLocation() {
@@ -645,6 +646,7 @@ ChannelInfo ChannelInfo::channelLocation(int ch) {
     if (ch == 29) return ChannelInfo(29,1,-2,1,2);
     if (ch == 30) return ChannelInfo(30,2,-2,0,2);
     if (ch == 31) return ChannelInfo(31,3,-2,-1,2);
+    return ChannelInfo(-1,0,0,0,0);
 }
 
 std::vector<ChannelInfo> ChannelInfo::neighbors()
